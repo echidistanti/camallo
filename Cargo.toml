@@ -27,3 +27,7 @@ lto = true
 strip = true
 panic = "abort"
 codegen-units = 1
+
+# webview2-com-sys with the loader DLL carried inside the program (vendor/webview2-com-sys/NOTE.md)
+[patch.crates-io]
+webview2-com-sys = { path = "vendor/webview2-com-sys" }

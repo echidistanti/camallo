@@ -1,0 +1,28 @@
+[package]
+name = "webview2-com-sys"
+version = "0.39.1"
+edition = "2021"
+rust-version = "1.82"
+description = "webview2-com-sys 0.39.1 with the WebView2 loader carried inside the program (see NOTE.md)"
+license = "MIT"
+repository = "https://github.com/wravery/webview2-rs"
+build = "build.rs"
+
+[lib]
+name = "webview2_com_sys"
+path = "src/lib.rs"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+    "Win32_System_WinRT",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[dependencies.windows-core]
+version = "0.62"
