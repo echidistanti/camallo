@@ -10,6 +10,7 @@ mod job;
 mod net;
 mod probe;
 mod settings;
+mod ui;
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
@@ -18,12 +19,16 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default().with_inner_size([820.0, 560.0]).with_min_inner_size([620.0, 360.0]),
+        viewport: eframe::egui::ViewportBuilder::default().with_inner_size([900.0, 640.0]).with_min_inner_size([760.0, 420.0]),
         ..Default::default()
     };
     eframe::run_native(
         "Camallo",
         options,
-        Box::new(|cc| Ok(Box::new(app::App::new(cc.egui_ctx.clone())))),
+        Box::new(|cc| {
+            ui::fonts(&cc.egui_ctx);
+            ui::apply(&cc.egui_ctx);
+            Ok(Box::new(app::App::new(cc.egui_ctx.clone())))
+        }),
     )
 }

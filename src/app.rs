@@ -3,6 +3,7 @@ use crate::detector::{kind_of, Kind};
 use crate::job::{self, Cand, Ctl, Job, Opts, State};
 use crate::probe::{self, human_duration, human_size, Info};
 use crate::settings::{self, Container, HistoryItem, Quality, Settings, MAX_PARALLEL};
+use crate::ui;
 use eframe::egui;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -81,10 +82,6 @@ type Sy = Arc<(Mutex<Shared>, Condvar)>;
 
 fn lock(m: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
     m.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-fn short(s: &str) -> String {
-    if s.chars().count() > 70 { format!("{}...", s.chars().take(70).collect::<String>()) } else { s.into() }
 }
 
 fn now() -> u64 {
@@ -313,6 +310,58 @@ fn on_browser_line(sy: &Sy, ctx: &egui::Context, v: &serde_json::Value) {
     }
 }
 
+/// Fills the window with made-up downloads in every state, to look at the layout. Debug builds only.
+#[cfg(debug_assertions)]
+fn demo(sy: &Sy, mode: &str) {
+    let mut s = lock(&sy.0);
+    if mode == "empty" {
+        return;
+    }
+    if mode == "picker" {
+        let cand = Cand { url: "https://www.youtube.com/watch?v=abc".into(), referer: None, ua: None, title: None };
+        let q = |height, size| probe::Quality { height, size };
+        let info = Info {
+            title: "Lezione 3 - Introduzione alla sociologia dei media digitali".into(),
+            duration: Some(3725),
+            qualities: vec![q(2160, Some(910_000_000)), q(1080, Some(240_000_000)), q(720, Some(120_000_000)), q(480, None)],
+            has_audio: true,
+        };
+        s.probe = Some(ProbeUi { cand, state: ProbeState::Ready(info) });
+        return;
+    }
+    let dir = s.set.out_dir();
+    let video = |h| Opts { audio: false, container: Container::Mp4, height: h };
+    let audio = Opts { audio: true, container: Container::Mp4, height: None };
+    let mk = |url: &str, title: &str, o: Opts, state: State| {
+        let c = Cand { url: url.into(), referer: None, ua: None, title: Some(title.into()) };
+        let mut j = Job::new(c, o, dir.clone(), vec![]);
+        j.state = state;
+        if j.state == State::Done {
+            j.out = Some(PathBuf::from("/tmp/demo.mp4"));
+        }
+        j
+    };
+    s.jobs = vec![
+        mk("https://www.youtube.com/watch?v=abc", "Lesson 3 - Introduction to photography: light, composition and exposure, explained from scratch", video(Some(1080)), State::Running(43.0)),
+        mk("https://soundcloud.com/a/b", "A song with a rather long title", audio, State::Running(78.0)),
+        mk("https://vimeo.com/123", "Intervista", video(None), State::Queued),
+        mk("https://cdn.site.test/video/master.m3u8", "Conference 2026", video(Some(720)), State::Done),
+        mk("https://example.com/private", "Private video", video(None), State::Failed("ERROR: [generic] Unable to download webpage: HTTP Error 403: Forbidden (caused by <HTTPError 403>)".into())),
+        mk("https://example.org/clip", "Cancelled clip", video(None), State::Cancelled),
+    ];
+    s.armed = true;
+    s.page_title = "Lesson 3 - Introduction to photography | Courses Platform".into();
+    let f = |kind, url: &str, size| Found { kind, url: url.into(), referer: String::new(), ua: String::new(), title: String::new(), size };
+    s.found = vec![
+        f(Kind::Page, "https://courses.site.test/lesson/3", None),
+        f(Kind::Hls, "https://cdn.site.test/video/master.m3u8", None),
+        f(Kind::File, "https://cdn.site.test/video/720.mp4", Some(48_000_000)),
+    ];
+    s.history = (0..4)
+        .map(|i| HistoryItem { title: format!("Downloaded video {i}"), url: "https://example.com".into(), path: "/tmp/a.mp4".into(), when: 0 })
+        .collect();
+}
+
 enum Action {
     Typed { choose: bool },
     Download(Cand),
@@ -339,19 +388,24 @@ pub struct App {
     ctx: egui::Context,
     input: String,
     browser: Option<Child>,
+    show_settings: bool,
 }
 
 impl App {
     pub fn new(ctx: egui::Context) -> Self {
         let set = Settings::load();
         let sy: Sy = Arc::new((Mutex::new(Shared::new(set, settings::load_history())), Condvar::new()));
+        #[cfg(debug_assertions)]
+        if let Ok(mode) = std::env::var("CAMALLO_DEMO") {
+            demo(&sy, &mode);
+        }
         let (s1, c1) = (sy.clone(), ctx.clone());
         std::thread::spawn(move || setup(s1, c1));
         for _ in 0..MAX_PARALLEL {
             let (s2, c2) = (sy.clone(), ctx.clone());
             std::thread::spawn(move || worker(s2, c2));
         }
-        Self { sy, ctx, input: String::new(), browser: None }
+        Self { sy, ctx, input: String::new(), browser: None, show_settings: false }
     }
 
     fn open_browser(&mut self, url: String) {
@@ -502,7 +556,324 @@ fn nz(s: &str) -> Option<String> {
 }
 
 fn red(ui: &mut egui::Ui, t: &str) {
-    ui.colored_label(egui::Color32::from_rgb(200, 50, 50), t);
+    ui.label(egui::RichText::new(t).color(ui::DANGER));
+}
+
+fn muted(t: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(t.into()).color(ui::MUTED).size(13.0)
+}
+
+/// What the file will be, for the capsule under the title: "MP4 · 1080p", "MP3".
+fn format_label(o: &Opts) -> String {
+    if o.audio {
+        return "MP3".into();
+    }
+    let q = o.height.map(|h| format!("{h}p")).unwrap_or_else(|| "Best".into());
+    format!("{} · {}", o.container.short(), q)
+}
+
+/// Width taken by the buttons on the right of a download, so the title knows where to stop.
+fn buttons_width(s: &State) -> f32 {
+    match s {
+        State::Queued | State::Running(_) => 90.0,
+        State::Done => 175.0,
+        State::Cancelled => 125.0,
+        State::Failed(_) => 250.0,
+    }
+}
+
+fn section_title(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).size(16.0).strong());
+}
+
+/// A line of text that stops at the edge instead of pushing the buttons away.
+fn clipped(ui: &mut egui::Ui, text: egui::RichText) -> egui::Response {
+    ui.add(egui::Label::new(text).truncate())
+}
+
+/// Left part of a row gets `left` wide, the rest is for the buttons, which are laid out from the right.
+fn split_row(
+    ui: &mut egui::Ui,
+    left: f32,
+    height: f32,
+    text: impl FnOnce(&mut egui::Ui),
+    buttons: impl FnOnce(&mut egui::Ui),
+) {
+    ui.allocate_ui_with_layout(egui::vec2(left, height), egui::Layout::top_down(egui::Align::Min), |ui| {
+        ui.set_width(left);
+        text(ui);
+    });
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), buttons);
+}
+
+fn detected_card(ui: &mut egui::Ui, found: &[Found], page_title: &str, actions: &mut Vec<Action>) {
+    let only_page = found.iter().all(|f| f.kind == Kind::Page);
+    let tint = egui::Color32::from_rgb(0x1c, 0x2a, 0x22);
+    ui::card(ui, tint, egui::Stroke::new(1.5, ui::ACCENT), |ui| {
+        ui.horizontal(|ui| {
+            ui::badge(ui, ui::Badge::Play);
+            let left = (ui.available_width() - 300.0).max(140.0);
+            split_row(
+                ui,
+                left,
+                ui::BADGE,
+                |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.label(egui::RichText::new("Video detected").size(17.0).strong().color(ui::ACCENT));
+                    if !page_title.is_empty() {
+                        clipped(ui, muted(page_title));
+                    }
+                    if only_page {
+                        ui.label(muted("No stream address was seen; the page itself can be tried."));
+                    }
+                },
+                |ui| {
+                    if ui::pill(ui, "Download", ui::Kind::Primary, 16.0).clicked() {
+                        actions.push(Action::DownloadAll(best_cands(found)));
+                    }
+                    if ui::button(ui, "Choose quality", ui::Kind::Soft).clicked() {
+                        actions.push(Action::DownloadAs(found[0].cand()));
+                    }
+                },
+            );
+        });
+        if found.len() > 1 {
+            ui.collapsing(format!("All {} addresses found", found.len()), |ui| {
+                for f in found {
+                    ui.horizontal(|ui| {
+                        let left = (ui.available_width() - 200.0).max(120.0);
+                        split_row(
+                            ui,
+                            left,
+                            24.0,
+                            |ui| {
+                                ui.horizontal(|ui| {
+                                    ui::chip(ui, f.kind.badge());
+                                    if let Some(n) = f.size {
+                                        ui::chip(ui, &human_size(n));
+                                    }
+                                    let name = if f.title.is_empty() { f.url.clone() } else { f.title.clone() };
+                                    clipped(ui, muted(name)).on_hover_text(&f.url);
+                                });
+                            },
+                            |ui| {
+                                if ui::pill(ui, "Quality", ui::Kind::Ghost, 13.0).clicked() {
+                                    actions.push(Action::DownloadAs(f.cand()));
+                                }
+                                if ui::pill(ui, "Download", ui::Kind::Soft, 13.0).clicked() {
+                                    actions.push(Action::Download(f.cand()));
+                                }
+                            },
+                        );
+                    });
+                }
+            });
+        }
+    });
+}
+
+fn job_card(ui: &mut egui::Ui, i: usize, j: &Job, actions: &mut Vec<Action>) {
+    let (badge, outline) = match &j.state {
+        State::Queued => (ui::Badge::Queued, egui::Stroke::new(1.0, ui::LINE)),
+        State::Running(p) => (ui::Badge::Running(*p), egui::Stroke::new(1.0, ui::LINE)),
+        State::Done => (ui::Badge::Done, egui::Stroke::new(1.0, ui::LINE)),
+        State::Cancelled => (ui::Badge::Cancelled, egui::Stroke::new(1.0, ui::LINE)),
+        State::Failed(_) => (ui::Badge::Failed, egui::Stroke::new(1.0, ui::DANGER_DIM)),
+    };
+    ui::card(ui, ui::CARD, outline, |ui| {
+        ui.horizontal(|ui| {
+            ui::badge(ui, badge);
+            let left = (ui.available_width() - buttons_width(&j.state)).max(140.0);
+            split_row(
+                ui,
+                left,
+                ui::BADGE,
+                |ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    clipped(ui, egui::RichText::new(j.label()).size(15.0).strong()).on_hover_text(&j.url);
+                    if let State::Running(p) = &j.state {
+                        ui::bar(ui, *p);
+                    }
+                    ui.horizontal(|ui| {
+                        match &j.state {
+                            State::Queued => {
+                                ui.label(muted("Waiting"));
+                            }
+                            State::Running(_) => {
+                                ui.label(muted("Downloading"));
+                            }
+                            State::Done => {
+                                ui.label(egui::RichText::new("Done").size(13.0).color(ui::ACCENT));
+                            }
+                            State::Cancelled => {
+                                ui.label(muted("Cancelled"));
+                            }
+                            State::Failed(why) => {
+                                let first = why.lines().next().unwrap_or("Failed");
+                                clipped(ui, egui::RichText::new(first).size(13.0).color(ui::DANGER)).on_hover_text(why);
+                            }
+                        }
+                        if !matches!(j.state, State::Failed(_)) {
+                            ui::chip(ui, &format_label(&j.opts));
+                            ui::chip(ui, &ui::host_of(&j.url));
+                        }
+                    });
+                },
+                |ui| match &j.state {
+                    State::Queued | State::Running(_) => {
+                        if ui::button(ui, "Cancel", ui::Kind::Ghost).clicked() {
+                            actions.push(Action::Cancel(i));
+                        }
+                    }
+                    State::Done => {
+                        if ui::close(ui).on_hover_text("Remove from the list").clicked() {
+                            actions.push(Action::Hide(i));
+                        }
+                        if let Some(p) = &j.out {
+                            if ui::button(ui, "Show", ui::Kind::Soft).on_hover_text("Show in the folder").clicked() {
+                                actions.push(Action::Reveal(p.clone()));
+                            }
+                            if ui::button(ui, "Open", ui::Kind::Primary).clicked() {
+                                actions.push(Action::Open(p.clone()));
+                            }
+                        }
+                    }
+                    State::Cancelled => {
+                        if ui::close(ui).on_hover_text("Remove from the list").clicked() {
+                            actions.push(Action::Hide(i));
+                        }
+                        if ui::button(ui, "Retry", ui::Kind::Soft).clicked() {
+                            actions.push(Action::Retry(i));
+                        }
+                    }
+                    State::Failed(_) => {
+                        if ui::close(ui).on_hover_text("Remove from the list").clicked() {
+                            actions.push(Action::Hide(i));
+                        }
+                        if ui::button(ui, "Browser", ui::Kind::Ghost).on_hover_text("Open the page in the built-in browser").clicked() {
+                            actions.push(Action::Browser(j.url.clone()));
+                        }
+                        if ui::button(ui, "Retry", ui::Kind::Soft).clicked() {
+                            actions.push(Action::Retry(i));
+                        }
+                    }
+                },
+            );
+        });
+    });
+}
+
+fn empty_queue(ui: &mut egui::Ui) {
+    ui.add_space((ui.available_height() * 0.12).max(10.0));
+    ui.vertical_centered(|ui| {
+        ui::empty_icon(ui);
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("Your queue is empty").size(19.0).strong());
+        ui.label(muted("Paste a link above, or open the browser and play a video."));
+    });
+}
+
+fn history_list(ui: &mut egui::Ui, history: &[HistoryItem], actions: &mut Vec<Action>) {
+    ui.add_space(6.0);
+    ui.collapsing(egui::RichText::new(format!("History ({})", history.len())).size(15.0).strong(), |ui| {
+        if ui::pill(ui, "Clear history", ui::Kind::Ghost, 13.0).clicked() {
+            actions.push(Action::ClearHistory);
+        }
+        for h in history.iter().rev().take(30) {
+            ui.horizontal(|ui| {
+                let left = (ui.available_width() - 130.0).max(120.0);
+                split_row(
+                    ui,
+                    left,
+                    24.0,
+                    |ui| {
+                        clipped(ui, muted(&h.title)).on_hover_text(&h.url);
+                    },
+                    |ui| {
+                        if !h.path.is_empty() {
+                            if ui::pill(ui, "Show", ui::Kind::Ghost, 13.0).clicked() {
+                                actions.push(Action::Reveal(PathBuf::from(&h.path)));
+                            }
+                            if ui::pill(ui, "Open", ui::Kind::Soft, 13.0).clicked() {
+                                actions.push(Action::Open(PathBuf::from(&h.path)));
+                            }
+                        }
+                    },
+                );
+            });
+        }
+    });
+}
+
+/// The "Choose quality" window. Returns false when the user closed it.
+fn picker_window(
+    ctx: &egui::Context,
+    cand: &Cand,
+    state: &ProbeState,
+    container: Container,
+    actions: &mut Vec<Action>,
+) -> bool {
+    let mut open = true;
+    egui::Window::new("Choose quality")
+        .title_bar(false)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .frame(
+            egui::Frame::new()
+                .fill(ui::PANEL)
+                .stroke(egui::Stroke::new(1.0, ui::LINE))
+                .corner_radius(egui::CornerRadius::same(14))
+                .inner_margin(egui::Margin::same(18)),
+        )
+        .show(ctx, |ui| {
+            ui.set_width(400.0);
+            ui.spacing_mut().item_spacing.y = 10.0;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Choose quality").size(17.0).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui::close(ui).on_hover_text("Close").clicked() {
+                        open = false;
+                    }
+                });
+            });
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                open = false;
+            }
+            ui.label(muted(ui::host_of(&cand.url)));
+            match state {
+                ProbeState::Loading => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Looking at the video...");
+                    });
+                }
+                ProbeState::Failed(e) => red(ui, e),
+                ProbeState::Ready(info) => {
+                    ui.add(egui::Label::new(egui::RichText::new(&info.title).size(16.0).strong()).wrap());
+                    if let Some(d) = info.duration {
+                        ui::chip(ui, &human_duration(d));
+                    }
+                    let video = Opts { audio: false, container, height: None };
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                        if ui::button(ui, "Best available", ui::Kind::Primary).clicked() {
+                            actions.push(Action::Pick(cand.clone(), video));
+                        }
+                        for q in &info.qualities {
+                            let size = q.size.map(|s| format!("  ~{}", human_size(s))).unwrap_or_default();
+                            if ui::button(ui, &format!("{}p{}", q.height, size), ui::Kind::Soft).clicked() {
+                                actions.push(Action::Pick(cand.clone(), Opts { height: Some(q.height), ..video }));
+                            }
+                        }
+                        if info.has_audio && ui::button(ui, "Audio only (MP3)", ui::Kind::Soft).clicked() {
+                            actions.push(Action::Pick(cand.clone(), Opts { audio: true, ..video }));
+                        }
+                    });
+                }
+            }
+        });
+    open
 }
 
 impl eframe::App for App {
@@ -523,233 +894,154 @@ impl eframe::App for App {
             )
         };
         let mut set = orig.clone();
+        let line = egui::Stroke::new(1.0, ui::LINE);
 
-        egui::Panel::top("top").show(ui, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                let r = ui.add(
-                    egui::TextEdit::singleline(&mut self.input)
-                        .hint_text("Paste a video URL")
-                        .desired_width((ui.available_width() - 330.0).max(120.0)),
-                );
-                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if ui.button("Download").clicked() || enter {
-                    actions.push(Action::Typed { choose: false });
-                }
-                if ui.button("Download as...").clicked() {
-                    actions.push(Action::Typed { choose: true });
-                }
-                if ui.button("Open in browser").clicked() {
-                    let u = job::valid_url(&self.input).unwrap_or_else(|| "https://duckduckgo.com".into());
-                    actions.push(Action::Browser(u));
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut set.audio_only, "Audio only (MP3)");
-                ui.add_enabled_ui(!set.audio_only, |ui| {
-                    egui::ComboBox::from_id_salt("container").selected_text(set.container.label()).show_ui(ui, |ui| {
-                        for c in Container::ALL {
-                            ui.selectable_value(&mut set.container, c, c.label());
+        egui::Panel::top("top")
+            .frame(egui::Frame::new().fill(ui::PANEL).inner_margin(egui::Margin::symmetric(16, 12)))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let kind = if self.show_settings { ui::Kind::Selected } else { ui::Kind::Soft };
+                        if ui::button(ui, "Settings", kind).clicked() {
+                            self.show_settings = !self.show_settings;
                         }
-                    });
-                    egui::ComboBox::from_id_salt("quality").selected_text(set.quality.label()).show_ui(ui, |ui| {
-                        for q in Quality::ALL {
-                            ui.selectable_value(&mut set.quality, q, q.label());
+                        let tip = "Open a page and let Camallo find the video";
+                        if ui::button(ui, "Browser", ui::Kind::Soft).on_hover_text(tip).clicked() {
+                            let u = job::valid_url(&self.input).unwrap_or_else(|| "https://duckduckgo.com".into());
+                            actions.push(Action::Browser(u));
+                        }
+                        if ui::button(ui, "Choose quality", ui::Kind::Soft).clicked() {
+                            actions.push(Action::Typed { choose: true });
+                        }
+                        let go = ui::pill(ui, "Download", ui::Kind::Primary, 15.0).clicked();
+                        let r = ui.add_sized(
+                            [ui.available_width(), 38.0],
+                            egui::TextEdit::singleline(&mut self.input)
+                                .hint_text("Paste a video link")
+                                .margin(egui::Margin::symmetric(14, 9))
+                                .align(egui::Align2::LEFT_CENTER),
+                        );
+                        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if go || enter {
+                            actions.push(Action::Typed { choose: false });
                         }
                     });
                 });
-                ui.label("At once:");
-                egui::ComboBox::from_id_salt("parallel").selected_text(set.parallel.to_string()).show_ui(ui, |ui| {
-                    for n in 1..=MAX_PARALLEL {
-                        ui.selectable_value(&mut set.parallel, n, n.to_string());
+                if self.show_settings {
+                    ui.add_space(10.0);
+                    ui::card(ui, ui::CARD, line, |ui| {
+                        egui::Grid::new("settings").num_columns(2).spacing([18.0, 10.0]).show(ui, |ui| {
+                            ui.label(muted("Save to"));
+                            ui.horizontal(|ui| {
+                                if ui::button(ui, "Change", ui::Kind::Soft).clicked() {
+                                    actions.push(Action::ChangeFolder);
+                                }
+                                if ui::button(ui, "Open folder", ui::Kind::Soft).clicked() {
+                                    actions.push(Action::OpenFolder);
+                                }
+                                clipped(ui, muted(set.dir.display().to_string()));
+                            });
+                            ui.end_row();
+                            ui.label(muted("Subfolder"));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut set.subdir)
+                                    .hint_text("optional")
+                                    .desired_width(180.0)
+                                    .margin(egui::Margin::symmetric(10, 6)),
+                            );
+                            ui.end_row();
+                            ui.label(muted("Downloads at once"));
+                            egui::ComboBox::from_id_salt("parallel").selected_text(set.parallel.to_string()).width(64.0).show_ui(ui, |ui| {
+                                for n in 1..=MAX_PARALLEL {
+                                    ui.selectable_value(&mut set.parallel, n, n.to_string());
+                                }
+                            });
+                            ui.end_row();
+                        });
+                    });
+                }
+            });
+
+        egui::Panel::bottom("bottom")
+            .frame(egui::Frame::new().fill(ui::PANEL).inner_margin(egui::Margin::symmetric(16, 10)))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(muted("New downloads:"));
+                    let video = if set.audio_only { ui::Kind::Soft } else { ui::Kind::Selected };
+                    let audio = if set.audio_only { ui::Kind::Selected } else { ui::Kind::Soft };
+                    if ui::button(ui, "Video", video).clicked() {
+                        set.audio_only = false;
                     }
-                });
-            });
-            ui.horizontal(|ui| {
-                ui.label(format!("Folder: {}", set.dir.display()));
-                if ui.button("Change").clicked() {
-                    actions.push(Action::ChangeFolder);
-                }
-                if ui.button("Open").clicked() {
-                    actions.push(Action::OpenFolder);
-                }
-                ui.label("Subfolder:");
-                ui.add(egui::TextEdit::singleline(&mut set.subdir).desired_width(110.0));
-            });
-            ui.label(status);
-            ui.add_space(4.0);
-        });
-
-        egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                if armed && !found.is_empty() {
-                    egui::Frame::group(ui.style()).show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        let only_page = found.iter().all(|f| f.kind == Kind::Page);
-                        ui.strong("Video detected");
-                        if !page_title.is_empty() {
-                            ui.label(short(&page_title));
-                        }
-                        if only_page {
-                            ui.weak("No stream address was seen; the page itself can be tried.");
-                        }
-                        ui.horizontal(|ui| {
-                            let big = egui::Button::new(egui::RichText::new("Download").strong().size(16.0))
-                                .min_size(egui::vec2(150.0, 34.0))
-                                .fill(egui::Color32::from_rgb(232, 89, 12));
-                            if ui.add(big).clicked() {
-                                actions.push(Action::DownloadAll(best_cands(&found)));
-                            }
-                            if ui.button("Download as...").clicked() {
-                                actions.push(Action::DownloadAs(found[0].cand()));
+                    if ui::button(ui, "Audio (MP3)", audio).clicked() {
+                        set.audio_only = true;
+                    }
+                    ui.add_enabled_ui(!set.audio_only, |ui| {
+                        egui::ComboBox::from_id_salt("container").selected_text(set.container.short()).width(70.0).show_ui(ui, |ui| {
+                            for c in Container::ALL {
+                                ui.selectable_value(&mut set.container, c, c.label());
                             }
                         });
-                        if found.len() > 1 {
-                            ui.add_space(4.0);
-                            ui.collapsing(format!("All {} addresses found", found.len()), |ui| {
-                                for f in &found {
-                                    ui.horizontal(|ui| {
-                                        if ui.button("Download").clicked() {
-                                            actions.push(Action::Download(f.cand()));
-                                        }
-                                        if ui.button("Download as...").clicked() {
-                                            actions.push(Action::DownloadAs(f.cand()));
-                                        }
-                                        ui.label(egui::RichText::new(f.kind.badge()).monospace().strong());
-                                        if let Some(n) = f.size {
-                                            ui.label(human_size(n));
-                                        }
-                                        let name = if f.title.is_empty() { short(&f.url) } else { short(&f.title) };
-                                        ui.label(name).on_hover_text(&f.url);
-                                    });
-                                }
-                            });
-                        }
+                        egui::ComboBox::from_id_salt("quality").selected_text(set.quality.label()).width(84.0).show_ui(ui, |ui| {
+                            for q in Quality::ALL {
+                                ui.selectable_value(&mut set.quality, q, q.label());
+                            }
+                        });
                     });
-                    ui.add_space(6.0);
-                }
-
-                ui.horizontal(|ui| {
-                    ui.strong("Downloads");
-                    if ui.small_button("Clear finished").clicked() {
-                        actions.push(Action::ClearFinished);
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui::button(ui, "Folder", ui::Kind::Ghost).on_hover_text("Open the download folder").clicked() {
+                            actions.push(Action::OpenFolder);
+                        }
+                        let running = jobs.iter().filter(|j| matches!(j.state, State::Running(_))).count();
+                        let waiting = jobs.iter().filter(|j| j.state == State::Queued).count();
+                        let text = if status == "Ready" && running + waiting > 0 {
+                            format!("{running} downloading, {waiting} waiting")
+                        } else {
+                            status.clone()
+                        };
+                        let color = if status.starts_with("Setup failed") { ui::DANGER } else { ui::MUTED };
+                        clipped(ui, egui::RichText::new(text).size(13.0).color(color));
+                    });
                 });
-                for (i, j) in jobs.iter().enumerate().rev().filter(|(_, j)| !j.hidden) {
-                    ui.horizontal(|ui| {
-                        ui.label(short(&j.label())).on_hover_text(&j.url);
-                        match &j.state {
-                            State::Queued => {
-                                ui.label("Queued");
-                                if ui.button("Cancel").clicked() {
-                                    actions.push(Action::Cancel(i));
-                                }
-                            }
-                            State::Running(p) => {
-                                ui.add(egui::ProgressBar::new(p / 100.0).show_percentage().desired_width(160.0));
-                                if ui.button("Cancel").clicked() {
-                                    actions.push(Action::Cancel(i));
-                                }
-                            }
-                            State::Done => {
-                                ui.label("Done");
-                                if let Some(p) = &j.out {
-                                    if ui.button("Open").clicked() {
-                                        actions.push(Action::Open(p.clone()));
-                                    }
-                                    if ui.button("Show").clicked() {
-                                        actions.push(Action::Reveal(p.clone()));
-                                    }
-                                }
-                                if ui.button("x").on_hover_text("Remove from the list").clicked() {
-                                    actions.push(Action::Hide(i));
-                                }
-                            }
-                            State::Cancelled => {
-                                ui.label("Cancelled");
-                                if ui.button("Retry").clicked() {
-                                    actions.push(Action::Retry(i));
-                                }
-                                if ui.button("x").on_hover_text("Remove from the list").clicked() {
-                                    actions.push(Action::Hide(i));
-                                }
-                            }
-                            State::Failed(why) => {
-                                red(ui, why);
-                                if ui.button("Retry").clicked() {
-                                    actions.push(Action::Retry(i));
-                                }
-                                if ui.button("Open in browser").clicked() {
-                                    actions.push(Action::Browser(j.url.clone()));
-                                }
-                            }
-                        }
-                    });
-                }
-
-                if !history.is_empty() {
-                    ui.separator();
-                    ui.collapsing(format!("History ({})", history.len()), |ui| {
-                        if ui.small_button("Clear history").clicked() {
-                            actions.push(Action::ClearHistory);
-                        }
-                        for h in history.iter().rev().take(30) {
-                            ui.horizontal(|ui| {
-                                if !h.path.is_empty() {
-                                    if ui.small_button("Open").clicked() {
-                                        actions.push(Action::Open(PathBuf::from(&h.path)));
-                                    }
-                                    if ui.small_button("Show").clicked() {
-                                        actions.push(Action::Reveal(PathBuf::from(&h.path)));
-                                    }
-                                }
-                                ui.label(short(&h.title)).on_hover_text(&h.url);
-                            });
-                        }
-                    });
-                }
             });
-        });
 
-        if let Some((cand, state)) = picker {
-            let mut open = true;
-            egui::Window::new("Download as...")
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ui.ctx(), |ui| {
-                    ui.label(short(&cand.url));
-                    match &state {
-                        ProbeState::Loading => {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label("Looking at the video...");
-                            });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(ui::BG).inner_margin(egui::Margin::same(16)))
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 10.0;
+                    if armed && !found.is_empty() {
+                        detected_card(ui, &found, &page_title, &mut actions);
+                        ui.add_space(4.0);
+                    }
+
+                    let shown: Vec<(usize, &Job)> = jobs.iter().enumerate().rev().filter(|(_, j)| !j.hidden).collect();
+                    ui.horizontal(|ui| {
+                        section_title(ui, "Downloads");
+                        if !shown.is_empty() {
+                            ui::chip(ui, &shown.len().to_string());
                         }
-                        ProbeState::Failed(e) => red(ui, e),
-                        ProbeState::Ready(info) => {
-                            let dur = info.duration.map(|d| format!(" ({})", human_duration(d))).unwrap_or_default();
-                            ui.strong(format!("{}{}", short(&info.title), dur));
-                            let video = Opts { audio: false, container: set.container, height: None };
-                            if ui.button("Best available").clicked() {
-                                actions.push(Action::Pick(cand.clone(), video));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if !shown.is_empty() && ui::pill(ui, "Clear finished", ui::Kind::Ghost, 13.0).clicked() {
+                                actions.push(Action::ClearFinished);
                             }
-                            for q in &info.qualities {
-                                let size = q.size.map(|s| format!("  ~{}", human_size(s))).unwrap_or_default();
-                                if ui.button(format!("{}p{}", q.height, size)).clicked() {
-                                    actions.push(Action::Pick(cand.clone(), Opts { height: Some(q.height), ..video }));
-                                }
-                            }
-                            if info.has_audio && ui.button("Audio only (MP3)").clicked() {
-                                actions.push(Action::Pick(cand.clone(), Opts { audio: true, ..video }));
-                            }
-                        }
+                        });
+                    });
+                    if shown.is_empty() {
+                        empty_queue(ui);
+                    }
+                    for (i, j) in shown {
+                        job_card(ui, i, j, &mut actions);
+                    }
+                    if !history.is_empty() {
+                        history_list(ui, &history, &mut actions);
                     }
                 });
-            if !open {
-                actions.push(Action::ClosePicker);
-            }
+            });
+
+        if let Some((cand, state)) = picker
+            && !picker_window(ui.ctx(), &cand, &state, set.container, &mut actions)
+        {
+            actions.push(Action::ClosePicker);
         }
 
         if set != orig {

@@ -20,6 +20,14 @@ impl Container {
             Container::Webm => "webm",
         }
     }
+    /// For small spaces: the combo box and the capsule on a download.
+    pub fn short(self) -> &'static str {
+        match self {
+            Container::Mp4 => "MP4",
+            Container::Mkv => "MKV",
+            Container::Webm => "WebM",
+        }
+    }
     pub fn label(self) -> &'static str {
         match self {
             Container::Mp4 => "MP4",
