@@ -1,0 +1,28 @@
+[package]
+name = "camallo"
+version = "0.3.0"
+edition = "2024"
+
+[dependencies]
+dirs = "7.0.0"
+eframe = "0.37.0"
+rfd = "0.18.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+ureq = "3.5.2"
+zip = { version = "9.6.1", default-features = false, features = ["deflate"] }
+
+[target."cfg(windows)".dependencies]
+tao = "0.37.2"
+wry = "0.57.2"
+# Same versions wry already uses, to hear every network response of the built-in browser.
+webview2-com = "0.39.1"
+windows = "0.62.2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+panic = "abort"
+codegen-units = 1
