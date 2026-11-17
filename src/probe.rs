@@ -19,6 +19,7 @@ pub struct Info {
     /// Tallest first.
     pub qualities: Vec<Quality>,
     pub has_audio: bool,
+    pub thumbnail: Option<String>,
 }
 
 pub fn human_size(b: u64) -> String {
@@ -79,13 +80,30 @@ pub fn parse_info(v: &Value) -> Info {
         duration: v["duration"].as_f64().map(|d| d as u64),
         qualities,
         has_audio,
+        thumbnail: pick_thumb(v),
     }
 }
 
-pub fn probe(yt: &Path, c: &Cand) -> Result<Info, String> {
+/// A picture for the list: the widest one up to 700 px (small enough to be quick), else whatever yt-dlp calls "the" thumbnail.
+pub fn pick_thumb(v: &Value) -> Option<String> {
+    let usable = |u: &str| u.starts_with("http://") || u.starts_with("https://");
+    let best = v["thumbnails"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| Some((t["width"].as_u64().unwrap_or(0), t["url"].as_str().filter(|u| usable(u))?)))
+        .filter(|(w, _)| *w <= 700)
+        .max_by_key(|(w, _)| *w)
+        .map(|(_, u)| u.to_string());
+    best.or_else(|| v["thumbnail"].as_str().filter(|u| usable(u)).map(String::from))
+}
+
+/// Runs `yt-dlp -J` on an address and returns what it printed, or the one line that says why it could not.
+pub fn run_json(yt: &Path, c: &Cand, extra: &[&str]) -> Result<Value, String> {
     let mut cmd = Command::new(yt);
     quiet(&mut cmd)
-        .args(["-J", "--no-playlist", "--no-warnings", "--socket-timeout", "20"])
+        .args(["-J", "--no-warnings", "--socket-timeout", "20"])
+        .args(extra)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -102,8 +120,26 @@ pub fn probe(yt: &Path, c: &Cand) -> Result<Info, String> {
         let line = err.lines().rev().find(|l| l.starts_with("ERROR:")).unwrap_or("yt-dlp could not read this address");
         return Err(line.trim_start_matches("ERROR:").trim().chars().take(160).collect());
     }
-    let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("unreadable answer: {e}"))?;
+    serde_json::from_slice(&out.stdout).map_err(|e| format!("unreadable answer: {e}"))
+}
+
+/// What one video offers.
+pub fn probe(yt: &Path, c: &Cand) -> Result<Info, String> {
+    let v = run_json(yt, c, &["--no-playlist"])?;
+    if v["_type"].as_str() == Some("playlist") || v["entries"].is_array() {
+        return Err("This address is a list of videos, not a single video".into());
+    }
     Ok(parse_info(&v))
+}
+
+impl Info {
+    /// Rough size of the file for a picture height (None: the tallest), when the site told.
+    pub fn size_for(&self, height: Option<u32>) -> Option<u64> {
+        match height {
+            None => self.qualities.first()?.size,
+            Some(h) => self.qualities.iter().find(|q| q.height == h)?.size,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -167,5 +203,35 @@ mod tests {
         let v = json!({"title": "Song", "formats": [{"vcodec": "none", "acodec": "opus", "filesize": 10}]});
         let i = parse_info(&v);
         assert!(i.qualities.is_empty() && i.has_audio);
+    }
+
+    #[test]
+    fn thumbnail_is_the_widest_up_to_700_px() {
+        let v = json!({
+            "thumbnails": [
+                {"url": "https://i/small.jpg", "width": 168},
+                {"url": "https://i/mid.jpg", "width": 480},
+                {"url": "https://i/huge.jpg", "width": 1920},
+                {"url": "ftp://i/odd.jpg", "width": 600}
+            ],
+            "thumbnail": "https://i/huge.jpg"
+        });
+        assert_eq!(pick_thumb(&v).as_deref(), Some("https://i/mid.jpg"));
+        // Nothing small enough: the plain thumbnail field is used.
+        let v = json!({"thumbnails": [{"url": "https://i/huge.jpg", "width": 1920}], "thumbnail": "https://i/t.webp"});
+        assert_eq!(pick_thumb(&v).as_deref(), Some("https://i/t.webp"));
+        assert_eq!(pick_thumb(&json!({"title": "x"})), None);
+        assert_eq!(parse_info(&json!({"thumbnail": "https://i/t.jpg"})).thumbnail.as_deref(), Some("https://i/t.jpg"));
+    }
+
+    #[test]
+    fn size_follows_the_chosen_height() {
+        let q = |height, size| Quality { height, size };
+        let i = Info { qualities: vec![q(1080, Some(300)), q(720, None), q(480, Some(80))], ..Info::default() };
+        assert_eq!(i.size_for(None), Some(300));
+        assert_eq!(i.size_for(Some(480)), Some(80));
+        assert_eq!(i.size_for(Some(720)), None, "the site did not tell");
+        assert_eq!(i.size_for(Some(240)), None, "no such height");
+        assert_eq!(Info::default().size_for(None), None);
     }
 }

@@ -77,6 +77,8 @@ pub struct Settings {
     pub dir: PathBuf,
     /// Optional folder inside `dir` (for example one per site or per project).
     pub subdir: String,
+    /// Start each video as soon as yt-dlp has read it, without waiting for Download.
+    pub auto_start: bool,
 }
 
 impl Default for Settings {
@@ -88,6 +90,7 @@ impl Default for Settings {
             parallel: 2,
             dir: dirs::video_dir().unwrap_or_else(|| PathBuf::from(".")).join("Camallo"),
             subdir: String::new(),
+            auto_start: false,
         }
     }
 }

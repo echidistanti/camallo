@@ -1,3 +1,4 @@
+use crate::probe::Info;
 use crate::settings::{Container, Settings};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -7,6 +8,12 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum State {
+    /// yt-dlp is reading the address.
+    Fetching,
+    /// Read; waiting for the user to choose and press Download.
+    Ready,
+    /// yt-dlp could not read the address: the built-in browser may still find the video.
+    NoInfo(String),
     Queued,
     Running(f32),
     Done,
@@ -75,6 +82,17 @@ pub struct Job {
     pub ctl: Arc<Ctl>,
     /// Removed from the list by the user; the slot stays so indexes held by workers remain valid.
     pub hidden: bool,
+    /// Name from yt-dlp, for the list only; the file is named by `title` or by yt-dlp.
+    pub shown: Option<String>,
+    pub info: Option<Info>,
+    pub duration: Option<u64>,
+    pub thumb: Option<String>,
+    /// Everything added by one press of Add shares a batch, so a playlist stays together.
+    pub batch: u64,
+    /// Title of the playlist this video came from.
+    pub group: Option<String>,
+    /// Comes from a list: its details are fetched on their own.
+    pub is_entry: bool,
 }
 
 impl Job {
@@ -91,14 +109,25 @@ impl Job {
             out: None,
             ctl: Arc::new(Ctl::default()),
             hidden: false,
+            shown: None,
+            info: None,
+            duration: None,
+            thumb: None,
+            batch: 0,
+            group: None,
+            is_entry: false,
         }
     }
-    fn cand(&self) -> Cand {
+    /// An address yt-dlp has not read yet.
+    pub fn pending(c: Cand, opts: Opts, dir: PathBuf, batch: u64) -> Job {
+        Job { state: State::Fetching, batch, ..Job::new(c, opts, dir, vec![]) }
+    }
+    pub fn cand(&self) -> Cand {
         Cand { url: self.url.clone(), referer: self.referer.clone(), ua: self.ua.clone(), title: self.title.clone() }
     }
     /// Name shown in lists: the page title when known, else the address.
     pub fn label(&self) -> String {
-        self.title.clone().unwrap_or_else(|| self.url.clone())
+        self.shown.clone().or_else(|| self.title.clone()).unwrap_or_else(|| self.url.clone())
     }
 }
 

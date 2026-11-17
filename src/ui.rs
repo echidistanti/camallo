@@ -2,8 +2,8 @@
 //! Icons are drawn with shapes, so they do not depend on which glyphs a font has.
 
 use eframe::egui::{
-    self, vec2, Align2, Color32, CornerRadius, FontId, Margin, Pos2, Rect, Response, RichText, Sense, Shape, Stroke,
-    StrokeKind, TextStyle, Ui,
+    self, pos2, vec2, Align2, Color32, CornerRadius, FontId, Margin, Painter, PointerButton, Pos2, Rect, Response,
+    ResizeDirection, RichText, Sense, Shape, Stroke, StrokeKind, TextStyle, Ui, Vec2, ViewportCommand,
 };
 
 pub const BG: Color32 = Color32::from_rgb(0x1a, 0x1c, 0x1e);
@@ -13,9 +13,14 @@ pub const FIELD: Color32 = Color32::from_rgb(0x34, 0x38, 0x3b);
 pub const LINE: Color32 = Color32::from_rgb(0x3b, 0x40, 0x44);
 pub const TEXT: Color32 = Color32::from_rgb(0xe8, 0xea, 0xec);
 pub const MUTED: Color32 = Color32::from_rgb(0x9b, 0xa1, 0xa7);
-pub const ACCENT: Color32 = Color32::from_rgb(0x2f, 0xd0, 0x6a);
-pub const ACCENT_DIM: Color32 = Color32::from_rgb(0x1e, 0x3a, 0x2a);
-pub const ON_ACCENT: Color32 = Color32::from_rgb(0x08, 0x1c, 0x0f);
+pub const TITLE: Color32 = Color32::from_rgb(0x0f, 0x10, 0x11);
+/// Fill of the main buttons, the progress ring and the video badge.
+pub const ACCENT: Color32 = Color32::from_rgb(0x8b, 0x5c, 0xf6);
+pub const ACCENT_HOVER: Color32 = Color32::from_rgb(0xa1, 0x7c, 0xf8);
+/// The accent as text or outline on a dark background: lighter, so it stays readable.
+pub const ACCENT_TEXT: Color32 = Color32::from_rgb(0xb9, 0xa3, 0xfb);
+pub const ACCENT_DIM: Color32 = Color32::from_rgb(0x2b, 0x23, 0x48);
+pub const ON_ACCENT: Color32 = Color32::WHITE;
 pub const DANGER: Color32 = Color32::from_rgb(0xf0, 0x5d, 0x5d);
 pub const DANGER_DIM: Color32 = Color32::from_rgb(0x41, 0x25, 0x28);
 
@@ -35,9 +40,9 @@ pub fn apply(ctx: &egui::Context) {
         v.menu_corner_radius = CornerRadius::same(10);
         v.extreme_bg_color = FIELD;
         v.faint_bg_color = CARD;
-        v.hyperlink_color = ACCENT;
+        v.hyperlink_color = ACCENT_TEXT;
         v.selection.bg_fill = ACCENT_DIM;
-        v.selection.stroke = Stroke::new(1.0, ACCENT);
+        v.selection.stroke = Stroke::new(1.0, ACCENT_TEXT);
 
         let r = CornerRadius::same(9);
         let w = &mut v.widgets;
@@ -58,7 +63,7 @@ pub fn apply(ctx: &egui::Context) {
         w.hovered.corner_radius = r;
         w.active.bg_fill = PRESSED;
         w.active.weak_bg_fill = PRESSED;
-        w.active.bg_stroke = Stroke::new(1.0, ACCENT);
+        w.active.bg_stroke = Stroke::new(1.0, ACCENT_TEXT);
         w.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
         w.active.corner_radius = r;
         w.open.bg_fill = FIELD;
@@ -127,10 +132,10 @@ impl Kind {
     /// Text colour, fill, fill when hovered, outline.
     fn colors(self) -> (Color32, Color32, Color32, Stroke) {
         match self {
-            Kind::Primary => (ON_ACCENT, ACCENT, Color32::from_rgb(0x4a, 0xe0, 0x82), Stroke::NONE),
+            Kind::Primary => (ON_ACCENT, ACCENT, ACCENT_HOVER, Stroke::NONE),
             Kind::Soft => (TEXT, FIELD, HOVER, Stroke::NONE),
             Kind::Ghost => (MUTED, Color32::TRANSPARENT, FIELD, Stroke::NONE),
-            Kind::Selected => (ACCENT, ACCENT_DIM, Color32::from_rgb(0x25, 0x4a, 0x34), Stroke::new(1.0, ACCENT)),
+            Kind::Selected => (ACCENT_TEXT, ACCENT_DIM, Color32::from_rgb(0x38, 0x2d, 0x5e), Stroke::new(1.0, ACCENT)),
         }
     }
 }
@@ -190,83 +195,19 @@ pub fn chip(ui: &mut Ui, text: &str) {
     });
 }
 
-/// The state of a download as a round picture.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Badge {
-    Queued,
-    /// 0 to 100.
-    Running(f32),
-    Done,
-    Failed,
-    Cancelled,
-    /// A video was found.
-    Play,
-}
-
 pub const BADGE: f32 = 52.0;
 
-pub fn badge(ui: &mut Ui, b: Badge) {
+/// The round play mark of the "Video detected" banner.
+pub fn play_badge(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(vec2(BADGE, BADGE), Sense::hover());
     let p = ui.painter();
     let c = rect.center();
-    let r = BADGE / 2.0 - 3.0;
-    let ink = |color: Color32, w: f32| Stroke::new(w, color);
-    match b {
-        Badge::Queued => {
-            p.circle_stroke(c, r, ink(LINE, 4.0));
-            for dx in [-8.0, 0.0, 8.0] {
-                p.circle_filled(c + vec2(dx, 0.0), 2.2, MUTED);
-            }
-        }
-        Badge::Running(pct) => {
-            p.circle_stroke(c, r, ink(LINE, 4.0));
-            let sweep = arc(c, r, pct / 100.0);
-            if sweep.len() > 1 {
-                p.add(Shape::line(sweep, ink(ACCENT, 4.0)));
-            }
-            p.text(c, Align2::CENTER_CENTER, format!("{}%", pct.round() as u32), FontId::proportional(13.0), TEXT);
-        }
-        Badge::Done => {
-            p.circle_filled(c, r + 1.0, ACCENT);
-            p.add(Shape::line(
-                vec![c + vec2(-9.0, 0.5), c + vec2(-2.5, 7.0), c + vec2(9.5, -7.0)],
-                ink(ON_ACCENT, 3.5),
-            ));
-        }
-        Badge::Failed => {
-            p.circle_filled(c, r + 1.0, DANGER_DIM);
-            p.circle_stroke(c, r, ink(DANGER, 2.0));
-            p.line_segment([c + vec2(0.0, -9.0), c + vec2(0.0, 2.0)], ink(DANGER, 3.5));
-            p.circle_filled(c + vec2(0.0, 9.0), 2.2, DANGER);
-        }
-        Badge::Cancelled => {
-            p.circle_stroke(c, r, ink(LINE, 2.0));
-            cross_lines(p, c, 7.0, ink(MUTED, 3.0));
-        }
-        Badge::Play => {
-            p.circle_filled(c, r + 1.0, ACCENT);
-            p.add(Shape::convex_polygon(
-                vec![c + vec2(-6.0, -10.0), c + vec2(-6.0, 10.0), c + vec2(10.0, 0.0)],
-                ON_ACCENT,
-                Stroke::NONE,
-            ));
-        }
-    }
-}
-
-/// Points of an arc that starts at the top and goes clockwise, `part` of a full circle (0 to 1).
-pub fn arc(c: Pos2, r: f32, part: f32) -> Vec<Pos2> {
-    let part = part.clamp(0.0, 1.0);
-    let steps = ((part * 64.0).ceil() as usize).max(1);
-    if part <= 0.0 {
-        return vec![];
-    }
-    (0..=steps)
-        .map(|i| {
-            let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * part * (i as f32 / steps as f32);
-            c + vec2(a.cos(), a.sin()) * r
-        })
-        .collect()
+    p.circle_filled(c, BADGE / 2.0 - 2.0, ACCENT);
+    p.add(Shape::convex_polygon(
+        vec![c + vec2(-6.0, -10.0), c + vec2(-6.0, 10.0), c + vec2(10.0, 0.0)],
+        ON_ACCENT,
+        Stroke::NONE,
+    ));
 }
 
 fn cross_lines(p: &egui::Painter, c: Pos2, d: f32, stroke: Stroke) {
@@ -312,6 +253,222 @@ pub fn empty_icon(ui: &mut Ui) {
     p.add(Shape::line(vec![c + vec2(-14.0, 13.0), c + vec2(-14.0, 18.0), c + vec2(14.0, 18.0), c + vec2(14.0, 13.0)], ink));
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Icon {
+    Gear,
+    Folder,
+    Trash,
+    Close,
+    Globe,
+    Minimize,
+    Maximize,
+    Restore,
+}
+
+/// An icon about 16 px wide around `c`, drawn with lines.
+pub fn draw_icon(p: &Painter, c: Pos2, icon: Icon, color: Color32) {
+    let st = |w: f32| Stroke::new(w, color);
+    let at = |x: f32, y: f32| c + vec2(x, y);
+    match icon {
+        Icon::Close => cross_lines(p, c, 5.0, st(1.6)),
+        Icon::Minimize => {
+            p.line_segment([at(-5.0, 0.0), at(5.0, 0.0)], st(1.3));
+        }
+        Icon::Maximize => {
+            p.rect_stroke(Rect::from_center_size(c, vec2(10.0, 10.0)), CornerRadius::ZERO, st(1.3), StrokeKind::Middle);
+        }
+        Icon::Restore => {
+            p.rect_stroke(Rect::from_center_size(at(-1.0, 1.0), vec2(8.0, 8.0)), CornerRadius::ZERO, st(1.3), StrokeKind::Middle);
+            p.add(Shape::line(vec![at(-2.0, -5.0), at(5.0, -5.0), at(5.0, 2.0)], st(1.3)));
+        }
+        Icon::Gear => {
+            for k in 0..8 {
+                let a = k as f32 * std::f32::consts::FRAC_PI_4;
+                let d = vec2(a.cos(), a.sin());
+                p.line_segment([c + d * 5.5, c + d * 8.5], st(2.6));
+            }
+            p.circle_stroke(c, 5.5, st(2.0));
+            p.circle_stroke(c, 2.0, st(1.5));
+        }
+        Icon::Folder => {
+            p.add(Shape::closed_line(
+                vec![at(-8.0, -5.5), at(-3.0, -5.5), at(-1.0, -3.0), at(8.0, -3.0), at(8.0, 6.0), at(-8.0, 6.0)],
+                st(1.7),
+            ));
+        }
+        Icon::Trash => {
+            p.line_segment([at(-7.0, -4.5), at(7.0, -4.5)], st(1.7));
+            p.add(Shape::line(vec![at(-2.5, -4.5), at(-2.5, -7.5), at(2.5, -7.5), at(2.5, -4.5)], st(1.5)));
+            p.add(Shape::closed_line(vec![at(-5.5, -2.5), at(5.5, -2.5), at(4.5, 7.5), at(-4.5, 7.5)], st(1.7)));
+        }
+        Icon::Globe => {
+            p.circle_stroke(c, 7.5, st(1.6));
+            p.line_segment([at(-7.5, 0.0), at(7.5, 0.0)], st(1.3));
+            let meridian: Vec<Pos2> = (0..24)
+                .map(|i| {
+                    let a = std::f32::consts::TAU * i as f32 / 24.0;
+                    at(a.cos() * 3.4, a.sin() * 7.5)
+                })
+                .collect();
+            p.add(Shape::closed_line(meridian, st(1.3)));
+        }
+    }
+}
+
+/// An icon in the flow of a row, taking the room of a small button.
+pub fn draw_icon_inline(ui: &mut Ui, icon: Icon, color: Color32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
+    draw_icon(ui.painter(), rect.center(), icon, color);
+}
+
+/// A round button with an icon, like the ones around the list in youtube-dl-gui.
+pub fn icon_button(ui: &mut Ui, icon: Icon, on: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(34.0, 34.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let enabled = ui.is_enabled();
+        let hot = resp.hovered() && enabled;
+        if on {
+            ui.painter().circle_filled(rect.center(), 17.0, ACCENT_DIM);
+        } else if hot {
+            ui.painter().circle_filled(rect.center(), 17.0, FIELD);
+        }
+        let color = match (on, hot) {
+            (true, _) => ACCENT_TEXT,
+            (false, true) => TEXT,
+            _ => MUTED,
+        };
+        draw_icon(ui.painter(), rect.center(), icon, if enabled { color } else { color.gamma_multiply(0.4) });
+    }
+    if resp.hovered() && ui.is_enabled() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
+}
+
+/// A button of the title bar. `danger` turns red when hovered, like the close button of Windows.
+fn window_button(ui: &mut Ui, icon: Icon, danger: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(46.0, ui.available_height()), Sense::click());
+    if resp.hovered() {
+        let fill = if danger { Color32::from_rgb(0xe8, 0x11, 0x23) } else { Color32::from_rgb(0x2a, 0x2c, 0x2f) };
+        ui.painter().rect_filled(rect, CornerRadius::ZERO, fill);
+    }
+    let color = if resp.hovered() { Color32::WHITE } else { MUTED };
+    draw_icon(ui.painter(), rect.center(), icon, color);
+    resp
+}
+
+pub const TITLE_HEIGHT: f32 = 34.0;
+
+/// The window has no frame of the system, so this bar does what the frame did: name, move, minimise, maximise, close.
+pub fn title_bar(ui: &mut Ui) {
+    let ctx = ui.ctx().clone();
+    let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+    let bar = ui.max_rect();
+    // Added first, so the buttons on top of it win the pointer where they overlap.
+    let drag = ui.interact(bar, ui.scope_id().with("title_drag"), Sense::click_and_drag());
+    if drag.drag_started_by(PointerButton::Primary) {
+        ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+    }
+    if drag.double_clicked() {
+        ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+    }
+    let p = ui.painter();
+    let mid = pos2(bar.left() + 25.0, bar.center().y);
+    p.rect_filled(Rect::from_center_size(mid, vec2(16.0, 16.0)), CornerRadius::same(5), ACCENT);
+    p.add(Shape::convex_polygon(vec![mid + vec2(-2.5, -4.0), mid + vec2(-2.5, 4.0), mid + vec2(4.0, 0.0)], ON_ACCENT, Stroke::NONE));
+    p.text(pos2(bar.left() + 40.0, bar.center().y), Align2::LEFT_CENTER, "Camallo", FontId::proportional(13.0), MUTED);
+
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        if window_button(ui, Icon::Close, true).clicked() {
+            ctx.send_viewport_cmd(ViewportCommand::Close);
+        }
+        let (icon, tip) = if maximized { (Icon::Restore, "Restore") } else { (Icon::Maximize, "Maximize") };
+        if window_button(ui, icon, false).on_hover_text(tip).clicked() {
+            ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+        }
+        if window_button(ui, Icon::Minimize, false).on_hover_text("Minimize").clicked() {
+            ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+        }
+    });
+}
+
+/// Which edge or corner of the window a point is on, within `m` pixels of the border.
+pub fn edge_at(p: Pos2, r: Rect, m: f32) -> Option<ResizeDirection> {
+    use ResizeDirection::*;
+    let (l, rt, t, b) = (p.x - r.left() < m, r.right() - p.x < m, p.y - r.top() < m, r.bottom() - p.y < m);
+    match (l, rt, t, b) {
+        (true, _, true, _) => Some(NorthWest),
+        (_, true, true, _) => Some(NorthEast),
+        (true, _, _, true) => Some(SouthWest),
+        (_, true, _, true) => Some(SouthEast),
+        (true, ..) => Some(West),
+        (_, true, ..) => Some(East),
+        (_, _, true, _) => Some(North),
+        (_, _, _, true) => Some(South),
+        _ => None,
+    }
+}
+
+fn resize_cursor(d: ResizeDirection) -> egui::CursorIcon {
+    use egui::CursorIcon as C;
+    use ResizeDirection::*;
+    match d {
+        North => C::ResizeNorth,
+        South => C::ResizeSouth,
+        East => C::ResizeEast,
+        West => C::ResizeWest,
+        NorthEast => C::ResizeNorthEast,
+        NorthWest => C::ResizeNorthWest,
+        SouthEast => C::ResizeSouthEast,
+        SouthWest => C::ResizeSouthWest,
+    }
+}
+
+/// Without the system frame the window cannot be resized from its border unless this does it.
+pub fn resize_edges(ctx: &egui::Context) {
+    let (maximized, pos) = ctx.input(|i| (i.viewport().maximized.unwrap_or(false), i.pointer.hover_pos()));
+    let Some(pos) = pos.filter(|_| !maximized) else { return };
+    if let Some(dir) = edge_at(pos, ctx.content_rect(), 6.0) {
+        ctx.set_cursor_icon(resize_cursor(dir));
+        if ctx.input(|i| i.pointer.primary_pressed()) {
+            ctx.send_viewport_cmd(ViewportCommand::BeginResize(dir));
+        }
+    }
+}
+
+/// A thin line around the window, since there is no frame to show where it ends.
+pub fn border(ctx: &egui::Context) {
+    ctx.layer_painter(egui::LayerId::debug()).rect_stroke(ctx.content_rect(), CornerRadius::ZERO, Stroke::new(1.0, LINE), StrokeKind::Inside);
+}
+
+pub const THUMB: Vec2 = vec2(128.0, 72.0);
+
+/// The picture of a video; a dark box with a spinner while it is read, or a play mark when there is none.
+pub fn thumb(ui: &mut Ui, tex: Option<&egui::TextureHandle>, reading: bool, duration: Option<&str>) {
+    let (rect, _) = ui.allocate_exact_size(THUMB, Sense::hover());
+    let round = CornerRadius::same(8);
+    match tex {
+        Some(t) => egui::Image::new(t).corner_radius(round).paint_at(ui, rect),
+        None => {
+            ui.painter().rect_filled(rect, round, FIELD);
+            if reading {
+                egui::Spinner::new().size(22.0).color(MUTED).paint_at(ui, Rect::from_center_size(rect.center(), vec2(22.0, 22.0)));
+            } else {
+                let c = rect.center();
+                ui.painter().add(Shape::convex_polygon(vec![c + vec2(-6.0, -9.0), c + vec2(-6.0, 9.0), c + vec2(11.0, 0.0)], LINE, Stroke::NONE));
+            }
+        }
+    }
+    if let Some(d) = duration {
+        let galley = ui.painter().layout_no_wrap(d.to_owned(), FontId::proportional(11.5), Color32::WHITE);
+        let size = galley.size() + vec2(10.0, 4.0);
+        let tag = Rect::from_min_size(rect.right_bottom() - size - vec2(5.0, 5.0), size);
+        ui.painter().rect_filled(tag, CornerRadius::same(4), Color32::from_black_alpha(190));
+        ui.painter().galley(tag.center() - galley.size() / 2.0, galley, Color32::WHITE);
+    }
+}
+
 /// Site name of an address, for the line under the title.
 pub fn host_of(url: &str) -> String {
     let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
@@ -336,16 +493,18 @@ mod tests {
     }
 
     #[test]
-    fn arc_starts_at_the_top_and_closes_at_the_end() {
-        let c = pos2(10.0, 10.0);
-        assert!(arc(c, 5.0, 0.0).is_empty());
-        let quarter = arc(c, 5.0, 0.25);
-        let (a, b) = (quarter[0], *quarter.last().unwrap());
-        assert!((a.x - 10.0).abs() < 1e-4 && (a.y - 5.0).abs() < 1e-4, "starts at the top: {a:?}");
-        assert!((b.x - 15.0).abs() < 1e-4 && (b.y - 10.0).abs() < 1e-4, "a quarter turn ends on the right: {b:?}");
-        let full = arc(c, 5.0, 2.0);
-        assert!(full.len() > 60, "values above one are clamped, not wrapped");
-        let (f, l) = (full[0], *full.last().unwrap());
-        assert!((f.x - l.x).abs() < 1e-3 && (f.y - l.y).abs() < 1e-3);
+    fn border_zones_name_the_edge_or_corner() {
+        use ResizeDirection::*;
+        let r = Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 80.0));
+        assert_eq!(edge_at(pos2(50.0, 40.0), r, 6.0), None);
+        assert_eq!(edge_at(pos2(2.0, 40.0), r, 6.0), Some(West));
+        assert_eq!(edge_at(pos2(98.0, 40.0), r, 6.0), Some(East));
+        assert_eq!(edge_at(pos2(50.0, 1.0), r, 6.0), Some(North));
+        assert_eq!(edge_at(pos2(50.0, 79.0), r, 6.0), Some(South));
+        assert_eq!(edge_at(pos2(1.0, 1.0), r, 6.0), Some(NorthWest));
+        assert_eq!(edge_at(pos2(99.0, 1.0), r, 6.0), Some(NorthEast));
+        assert_eq!(edge_at(pos2(1.0, 79.0), r, 6.0), Some(SouthWest));
+        assert_eq!(edge_at(pos2(99.0, 79.0), r, 6.0), Some(SouthEast));
+        assert_eq!(edge_at(pos2(7.0, 40.0), r, 6.0), None, "just inside the zone");
     }
 }
