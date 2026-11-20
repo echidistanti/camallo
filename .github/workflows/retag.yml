@@ -1,0 +1,30 @@
+name: Retag (one-off)
+
+# Moves the release tags onto the rewritten commits. Run once by hand, then delete this file.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  retag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Move the tags
+        run: |
+          set -e
+          for pair in \
+            v0.4.0=e8a85809f006c2a2abe1253c7d0ba0f61ec4aeb7 \
+            v0.5.0=2bbfab0e8e6375f02fb472b7e9b61374dee18043 \
+            v0.6.0=0f5887b1c14518ffaf944ecc62e5f04b714e4b92; do
+            tag="${pair%%=*}"; sha="${pair##*=}"
+            git merge-base --is-ancestor "$sha" origin/main
+            git tag -f "$tag" "$sha"
+            git push --force origin "refs/tags/$tag"
+          done
+          git ls-remote --tags origin
