@@ -8,6 +8,10 @@ Scarica i video da un URL o da un browser incorporato che li rileva da solo. Win
 - MP4/MKV/WebM, solo audio, coda con download in parallelo, cronologia, avvio automatico opzionale (Impostazioni).
 - Finestra senza barra di sistema: barra del titolo nera disegnata dall'app, accento viola.
 
+## Installer
+
+Ogni release pubblicata riceve in automatico `camallo-<versione>-windows-x64-setup.exe`: wizard Inno Setup (inglese e italiano), installazione per utente senza permessi di amministratore in `%LOCALAPPDATA%\Programs\Camallo`, voce in Installazioni applicazioni e disinstallatore che chiede se togliere anche impostazioni e cronologia. Lo costruisce `.github/workflows/installer.yml` a partire dal `.7z` già allegato alla release; per rifarlo a mano: Actions, Installer, Run workflow, con il tag. Lo script è `installer/camallo.iss`.
+
 ## Compilare
 
 ```
