@@ -51,7 +51,7 @@ Download `camallo-<version>-windows-x64-setup.exe` from the [latest release](htt
 - The wizard is available in English and Italian.
 - It installs for the current user only, under `%LOCALAPPDATA%\Programs\Camallo`, and does not ask for administrator rights.
 - It adds a Start menu entry, an optional desktop shortcut, and an entry in *Installed apps* so that Windows can uninstall it.
-- The uninstaller asks whether to remove Camallo's settings, history, yt-dlp and ffmpeg as well. Your downloaded videos are never touched. A silent uninstall keeps the data.
+- The uninstaller asks whether to remove Camallo's settings, history, yt-dlp, ffmpeg and the built-in browser's profile as well. It deletes only those items, never the whole data folder, so videos are never touched even if the download folder was set inside it. A silent uninstall keeps the data.
 
 ### Option 2: portable archive
 
@@ -69,7 +69,7 @@ Download `camallo-<version>-windows-x64.7z` from the same page, extract it (Wind
 Many sites hide their video behind a player. In that case the card says so and offers a **Browser** button, and the globe icon in the top bar opens the built-in browser at any time.
 
 1. Open the page in the built-in browser and start the video.
-2. When Camallo sees the stream, the **Video detected** panel appears over the page. Press **Download** and the address is sent to the main window, which shows a card for it.
+2. When Camallo sees the stream, the **Video detected** panel appears over the page. Press **Download** and the address is sent to the main window, which shows a card for it. The card waits for you like any other: choose and press **Download** there. Nothing a web page does can start a download by itself, not even with *Start at once* on.
 3. If several candidates appear, Camallo tries them in order of reliability: a known embedded player first, then the page itself (yt-dlp may know the site), then streaming manifests, then plain files.
 
 What the detector recognises: HLS (`.m3u8`), MPEG-DASH (`.mpd`), Microsoft Smooth Streaming, plain video files (`mp4`, `webm`, `m4v`, `mov`, `mkv`, `flv`, `ogv`), and embedded YouTube, Vimeo, Dailymotion and Streamable players. It ignores stream segments, which are never worth offering one by one, and anything smaller than 64 KiB, which is a tracking clip or an icon.
@@ -78,6 +78,7 @@ What the detector recognises: HLS (`.m3u8`), MPEG-DASH (`.mpd`), Microsoft Smoot
 
 - Camallo does not break DRM. Protected streams are not downloaded.
 - Playlists are cut at 200 videos.
+- Camallo ignores your own yt-dlp configuration file (`--ignore-config`), so that a download behaves the same on every computer. The history keeps each address without the part after `?` or `#`, where signed links carry their keys.
 - What can be downloaded is whatever yt-dlp and the page's network traffic allow. If a site changes, update yt-dlp (Camallo does this at startup) or open an issue.
 
 ## Settings
@@ -105,7 +106,7 @@ MP4 prefers H.264 video with AAC audio, so the files play almost everywhere. MKV
 | History | `%LOCALAPPDATA%\Camallo\history.json` |
 | yt-dlp and ffmpeg | `%LOCALAPPDATA%\Camallo\bin\` |
 | WebView2 loader | `%LOCALAPPDATA%\Camallo\runtime\` |
-| Built-in browser profile | `camallo.exe.WebView2`, next to the executable |
+| Built-in browser profile (cookies, logins) | `%LOCALAPPDATA%\Camallo\webview\` (versions up to 0.6.0 kept it in `camallo.exe.WebView2`, next to the executable) |
 | Downloaded videos | the folder chosen in the settings |
 
 Camallo has no telemetry and no account. It talks to the network only to fetch yt-dlp from its GitHub releases, ffmpeg from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/), the pages and media you ask for, their thumbnails, and a size check on plain video files it detects.

@@ -9,6 +9,8 @@ pub const HIDE: &str = "window.__camallo&&window.__camallo.hide()";
 pub const SENT: &str = "window.__camallo&&window.__camallo.toast('Sent to Camallo')";
 
 const MAX_TRIES: usize = 6;
+/// A page can announce as many addresses as it likes; the detector keeps the first ones.
+const MAX_SEEN: usize = 200;
 /// Embeds whose address yt-dlp understands directly.
 const KNOWN: [&str; 5] = [
     "dailymotion.com/video/",
@@ -163,7 +165,7 @@ impl Detector {
             }
             Some("media") => {
                 let Some(mut c) = cand() else { return vec![] };
-                if self.seen.iter().any(|s| norm(&s.cand.url) == norm(&c.url)) {
+                if self.seen.len() >= MAX_SEEN || self.seen.iter().any(|s| norm(&s.cand.url) == norm(&c.url)) {
                     return vec![];
                 }
                 // The network does not always report the request headers; the page's own stand in.
@@ -277,6 +279,18 @@ mod tests {
         assert_eq!(kinds, ["page", "media"]);
         assert_eq!(shows(&e), 1);
         assert_eq!(urls(&d), ["https://site.test/2", "https://a.com/next.m3u8"]);
+    }
+
+    #[test]
+    fn a_page_cannot_make_the_detector_grow_without_end() {
+        let mut d = Detector::default();
+        d.on_message(&page("https://site.test/p", "T"));
+        for i in 0..1000 {
+            d.on_message(&msg("media", &format!("https://a.com/{i}.mp4")));
+        }
+        assert_eq!(d.seen.len(), MAX_SEEN);
+        // The ranking still hands out at most MAX_TRIES ways.
+        assert_eq!(d.ranked().len(), MAX_TRIES);
     }
 
     #[test]

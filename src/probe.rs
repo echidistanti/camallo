@@ -102,7 +102,8 @@ pub fn pick_thumb(v: &Value) -> Option<String> {
 pub fn run_json(yt: &Path, c: &Cand, extra: &[&str]) -> Result<Value, String> {
     let mut cmd = Command::new(yt);
     quiet(&mut cmd)
-        .args(["-J", "--no-warnings", "--socket-timeout", "20"])
+        // The user's own yt-dlp configuration must not change what is read.
+        .args(["-J", "--ignore-config", "--no-warnings", "--socket-timeout", "20"])
         .args(extra)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -146,6 +147,22 @@ impl Info {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[cfg(unix)]
+    #[test]
+    fn reading_an_address_ignores_the_users_yt_dlp_configuration() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("camallo-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A stand-in that answers with the arguments it got.
+        let fake = dir.join("fake-yt");
+        std::fs::write(&fake, "#!/bin/sh\nprintf '{\"args\":\"%s\"}' \"$*\"\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let c = Cand { url: "https://example.com/v".into(), referer: None, ua: None, title: None };
+        let v = run_json(&fake, &c, &[]).unwrap();
+        assert!(v["args"].as_str().unwrap().contains("--ignore-config"), "{v}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn sizes_and_durations_read_well() {

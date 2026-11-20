@@ -58,7 +58,7 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Tasks: deskto
 Filename: "{app}\{#MyAppExe}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; The built-in browser (WebView2) keeps its profile next to the exe, created at run time.
+; Versions up to 0.6.0 kept the built-in browser's profile (WebView2) next to the exe, created at run time.
 Type: filesandordirs; Name: "{app}\{#MyAppExe}.WebView2"
 
 [Code]
@@ -72,5 +72,14 @@ begin
   { A silent uninstall keeps user data; an interactive one asks. }
   if UninstallSilent then Exit;
   if MsgBox(CustomMessage('RemoveDataPrompt'), mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
-    DelTree(DataDir, True, True, True);
+  begin
+    { Only what Camallo itself writes. The download folder may have been set inside this one: never delete it as a whole. }
+    DelTree(DataDir + '\bin', True, True, True);
+    DelTree(DataDir + '\runtime', True, True, True);
+    DelTree(DataDir + '\webview', True, True, True);
+    DeleteFile(DataDir + '\settings.json');
+    DeleteFile(DataDir + '\history.json');
+    { Removes the folder only when nothing else is left in it. }
+    RemoveDir(DataDir);
+  end;
 end;

@@ -75,14 +75,17 @@ pub fn run(url: String) {
     use tao::event::{Event, WindowEvent};
     use tao::event_loop::{ControlFlow, EventLoopBuilder};
     use tao::window::WindowBuilder;
-    use wry::WebViewBuilder;
+    use wry::{WebContext, WebViewBuilder};
 
     // Messages from the page (any frame) and from the network reach the event loop, which owns the webview and the detector.
     let ev = EventLoopBuilder::<String>::with_user_event().build();
     let proxy = ev.create_proxy();
     let win = WindowBuilder::new().with_title("Camallo Browser").build(&ev).expect("window");
     let page_proxy = proxy.clone();
-    let view = WebViewBuilder::new()
+    // The browser's own profile (cookies, logins) lives with the rest of Camallo's data. By default WebView2 puts it
+    // next to the program, which fails in a folder that cannot be written and travels with a copy of the program.
+    let mut web_context = WebContext::new(Some(crate::deps::data_dir().join("webview")));
+    let view = WebViewBuilder::new_with_web_context(&mut web_context)
         .with_url(&url)
         .with_initialization_script(SCRIPT)
         .with_ipc_handler(move |req| {

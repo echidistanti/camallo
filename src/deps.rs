@@ -1,12 +1,14 @@
 use crate::job::quiet;
 use sha2::{Digest, Sha256};
-use std::io::Cursor;
-use std::path::PathBuf;
+use std::io::{Cursor, Write};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub struct Deps {
     pub yt: PathBuf,
     pub bin: PathBuf,
+    /// yt-dlp was already there, so it may be out of date; see `update`.
+    pub may_be_old: bool,
 }
 
 const YT_BASE: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/";
@@ -47,19 +49,37 @@ fn verified(url: &str, sums_url: &str, name: &str) -> Result<Vec<u8>, String> {
     Ok(data)
 }
 
-/// First run: download yt-dlp and ffmpeg (checksum-verified). Later runs: let yt-dlp self-update.
+/// Writes `path` through a `.part` file and a rename, so a closed app or a power cut never leaves
+/// half a file under the real name (the next start would trust it, because it exists).
+fn write_atomic(path: &Path, fill: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>) -> Result<(), String> {
+    let mut part = path.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    let r: std::io::Result<()> = (|| {
+        let mut f = std::fs::File::create(&part)?;
+        fill(&mut f)?;
+        f.sync_all()?;
+        drop(f); // closed before the rename, which Windows requires
+        std::fs::rename(&part, path)
+    })();
+    if let Err(e) = r {
+        let _ = std::fs::remove_file(&part);
+        return Err(format!("{}: {e}", path.display()));
+    }
+    Ok(())
+}
+
+/// First run: download yt-dlp and ffmpeg (checksum-verified).
 pub fn ensure(status: &mut dyn FnMut(&str)) -> Result<Deps, String> {
     let bin = data_dir().join("bin");
     std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
     let yt = bin.join("yt-dlp.exe");
 
-    if yt.exists() {
-        status("Checking for yt-dlp updates...");
-        let _ = quiet(&mut Command::new(&yt).arg("-U")).output();
-    } else {
+    let may_be_old = yt.exists();
+    if !may_be_old {
         status("Downloading yt-dlp...");
         let data = verified(&format!("{YT_BASE}yt-dlp.exe"), &format!("{YT_BASE}SHA2-256SUMS"), "yt-dlp.exe")?;
-        std::fs::write(&yt, data).map_err(|e| e.to_string())?;
+        write_atomic(&yt, |f| f.write_all(&data))?;
     }
 
     if !bin.join("ffmpeg.exe").exists() {
@@ -69,8 +89,7 @@ pub fn ensure(status: &mut dyn FnMut(&str)) -> Result<Deps, String> {
         for i in 0..ar.len() {
             let mut f = ar.by_index(i).map_err(|e| e.to_string())?;
             if f.name().is_ok_and(|n| n.ends_with("/bin/ffmpeg.exe")) {
-                let mut out = std::fs::File::create(bin.join("ffmpeg.exe")).map_err(|e| e.to_string())?;
-                std::io::copy(&mut f, &mut out).map_err(|e| e.to_string())?;
+                write_atomic(&bin.join("ffmpeg.exe"), |out| std::io::copy(&mut f, out).map(|_| ()))?;
                 break;
             }
         }
@@ -78,7 +97,13 @@ pub fn ensure(status: &mut dyn FnMut(&str)) -> Result<Deps, String> {
             return Err("ffmpeg.exe not found in archive".into());
         }
     }
-    Ok(Deps { yt, bin })
+    Ok(Deps { yt, bin, may_be_old })
+}
+
+/// Lets yt-dlp replace itself with the latest release. Slow on a bad connection, so it runs after the app is ready.
+/// shortcut: a download started in the very instant yt-dlp swaps its file can fail to start; Retry fixes it.
+pub fn update(yt: &Path) {
+    let _ = quiet(&mut Command::new(yt).arg("-U")).output();
 }
 
 #[cfg(test)]
@@ -88,6 +113,26 @@ mod tests {
     #[test]
     fn sha256_known_vector() {
         assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+
+    #[test]
+    fn a_failed_write_leaves_neither_the_file_nor_a_part() {
+        let dir = std::env::temp_dir().join(format!("camallo-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("tool.exe");
+        let e = write_atomic(&target, |f| {
+            f.write_all(b"half of it")?;
+            Err(std::io::Error::other("connection lost"))
+        });
+        assert!(e.unwrap_err().contains("connection lost"));
+        assert!(!target.exists(), "a half file must never take the real name");
+        assert!(!dir.join("tool.exe.part").exists());
+        // A later try works, and replaces what was there.
+        write_atomic(&target, |f| f.write_all(b"v1")).unwrap();
+        write_atomic(&target, |f| f.write_all(b"v2")).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"v2");
+        assert!(!dir.join("tool.exe.part").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

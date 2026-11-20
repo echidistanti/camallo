@@ -93,6 +93,8 @@ pub struct Job {
     pub group: Option<String>,
     /// Comes from a list: its details are fetched on their own.
     pub is_entry: bool,
+    /// Added by a page in the built-in browser: only the user pressing Download starts it, never "Start at once".
+    pub manual: bool,
 }
 
 impl Job {
@@ -116,6 +118,7 @@ impl Job {
             batch: 0,
             group: None,
             is_entry: false,
+            manual: false,
         }
     }
     /// An address yt-dlp has not read yet.
@@ -175,13 +178,33 @@ pub fn sanitize_title(t: &str) -> Option<String> {
     (!s.is_empty() && !reserved).then_some(s)
 }
 
-/// First name that does not clash with an existing file: "x", then "x (1)", "x (2)"...
-pub fn unique_stem(dir: &Path, stem: &str, ext: &str) -> String {
+/// Names taken by downloads that have started and not yet written their file: the disk cannot tell about those.
+static CLAIMED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+fn claimed() -> std::sync::MutexGuard<'static, Vec<PathBuf>> {
+    CLAIMED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A file name held for one running download; given back when dropped.
+pub struct Claim(PathBuf);
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        claimed().retain(|p| p != &self.0);
+    }
+}
+
+/// First name that clashes neither with a file on disk nor with a download in progress: "x", then "x (1)", "x (2)"...
+/// The name stays held while the returned claim lives, so two videos with the same title never share a file.
+pub fn claim_stem(dir: &Path, stem: &str, ext: &str) -> (String, Claim) {
+    let mut held = claimed();
     let mut n = 0;
     loop {
         let s = if n == 0 { stem.to_string() } else { format!("{stem} ({n})") };
-        if !dir.join(format!("{s}.{ext}")).exists() {
-            return s;
+        let path = dir.join(format!("{s}.{ext}"));
+        if !path.exists() && !held.contains(&path) {
+            held.push(path.clone());
+            return (s, Claim(path));
         }
         n += 1;
     }
@@ -195,8 +218,11 @@ pub fn video_selector(height: Option<u32>) -> String {
     }
 }
 
-pub fn args(job: &Job, ffmpeg_dir: &Path) -> Vec<String> {
+/// The yt-dlp command line for a job, and the claim on the file name it will write (when the page title gives one).
+pub fn args(job: &Job, ffmpeg_dir: &Path) -> (Vec<String>, Option<Claim>) {
     let mut a: Vec<String> = [
+        // The user's own yt-dlp configuration (an archive file, a different output template...) would change what a download does.
+        "--ignore-config",
         "--no-playlist",
         "--newline",
         "--color",
@@ -213,13 +239,18 @@ pub fn args(job: &Job, ffmpeg_dir: &Path) -> Vec<String> {
     a.push(ffmpeg_dir.to_string_lossy().into());
 
     let ext = if job.opts.audio { "mp3" } else { job.opts.container.ext() };
-    let name = match job.title.as_deref().and_then(sanitize_title) {
+    let (name, claim) = match job.title.as_deref().and_then(sanitize_title) {
         // The title is literal text, so a percent sign must not be read as a template field.
-        Some(t) => unique_stem(&job.dir, &t, ext).replace('%', "%%"),
-        None => "%(title).150B".into(),
+        Some(t) => {
+            let (n, c) = claim_stem(&job.dir, &t, ext);
+            (n.replace('%', "%%"), Some(c))
+        }
+        None => ("%(title).150B".into(), None),
     };
+    // The whole -o value is a template: a percent sign in the folder name needs the same care.
+    let dir = job.dir.to_string_lossy().replace('%', "%%");
     a.push("-o".into());
-    a.push(job.dir.join(format!("{name}.%(ext)s")).to_string_lossy().into());
+    a.push(PathBuf::from(dir).join(format!("{name}.%(ext)s")).to_string_lossy().into());
 
     if job.opts.audio {
         a.extend(["-x", "--audio-format", "mp3", "--audio-quality", "0"].map(String::from));
@@ -241,7 +272,7 @@ pub fn args(job: &Job, ffmpeg_dir: &Path) -> Vec<String> {
         a.extend(["--add-header".into(), format!("User-Agent:{u}")]);
     }
     a.push(job.url.clone());
-    a
+    (a, claim)
 }
 
 /// Runs yt-dlp to completion, reporting percent progress. Ok carries the final file when yt-dlp printed it.
@@ -249,9 +280,10 @@ pub fn run(yt: &Path, job: &Job, ffmpeg_dir: &Path, mut progress: impl FnMut(f32
     if job.ctl.is_cancelled() {
         return Err("Cancelled".into());
     }
+    let (argv, _claim) = args(job, ffmpeg_dir); // the name stays held until this function returns
     let mut cmd = Command::new(yt);
     quiet(&mut cmd)
-        .args(args(job, ffmpeg_dir))
+        .args(argv)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -335,6 +367,9 @@ mod tests {
     fn job(o: Opts) -> Job {
         Job::new(cand("https://example.com/v"), o, PathBuf::from("out"), vec![])
     }
+    fn argv(j: &Job, ffmpeg_dir: &Path) -> Vec<String> {
+        args(j, ffmpeg_dir).0
+    }
     fn has(v: &[String], pair: [&str; 2]) -> bool {
         v.windows(2).any(|w| w == pair)
     }
@@ -364,13 +399,51 @@ mod tests {
     fn names_never_overwrite() {
         let dir = std::env::temp_dir().join(format!("camallo-uniq-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(unique_stem(&dir, "clip", "mp4"), "clip");
+        let (a, ca) = claim_stem(&dir, "clip", "mp4");
+        assert_eq!(a, "clip");
+        drop(ca);
         std::fs::write(dir.join("clip.mp4"), b"x").unwrap();
-        assert_eq!(unique_stem(&dir, "clip", "mp4"), "clip (1)");
+        let (b, cb) = claim_stem(&dir, "clip", "mp4");
+        assert_eq!(b, "clip (1)");
+        drop(cb);
         std::fs::write(dir.join("clip (1).mp4"), b"x").unwrap();
-        assert_eq!(unique_stem(&dir, "clip", "mp4"), "clip (2)");
-        assert_eq!(unique_stem(&dir, "clip", "mkv"), "clip");
+        assert_eq!(claim_stem(&dir, "clip", "mp4").0, "clip (2)");
+        assert_eq!(claim_stem(&dir, "clip", "mkv").0, "clip");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_running_downloads_with_one_title_get_two_names() {
+        // Nothing exists on disk yet, as in the first seconds of a download.
+        let dir = std::env::temp_dir().join(format!("camallo-two-{}", std::process::id()));
+        let out = |v: &[String]| v[v.iter().position(|x| x == "-o").unwrap() + 1].clone();
+        let mut j = job(opts());
+        j.dir = dir.clone();
+        j.title = Some("Lesson 3".into());
+        let f = PathBuf::from("b");
+        let (first, c1) = args(&j, &f);
+        let (second, c2) = args(&j, &f);
+        assert!(out(&first).ends_with("Lesson 3.%(ext)s"), "{}", out(&first));
+        assert!(out(&second).ends_with("Lesson 3 (1).%(ext)s"), "{}", out(&second));
+        // A name given back (failed or cancelled download) can be used again.
+        drop(c2);
+        let (third, _c3) = args(&j, &f);
+        assert_eq!(out(&third), out(&second));
+        drop(c1);
+    }
+
+    #[test]
+    fn a_percent_sign_in_the_folder_is_not_a_template_field() {
+        let mut j = job(opts());
+        j.dir = PathBuf::from("out").join("a%(title)s");
+        let v = argv(&j, &PathBuf::from("b"));
+        let o = v[v.iter().position(|a| a == "-o").unwrap() + 1].clone();
+        assert!(o.contains("a%%(title)s") && o.ends_with("%(title).150B.%(ext)s"), "{o}");
+    }
+
+    #[test]
+    fn the_users_yt_dlp_configuration_is_ignored() {
+        assert!(argv(&job(opts()), &PathBuf::from("b")).contains(&"--ignore-config".to_string()));
     }
 
     #[test]
@@ -383,18 +456,18 @@ mod tests {
     #[test]
     fn args_by_container_and_audio() {
         let f = PathBuf::from("bin");
-        let v = args(&job(opts()), &f);
+        let v = argv(&job(opts()), &f);
         assert_eq!(v.last().unwrap(), "https://example.com/v");
         assert!(has(&v, ["--remux-video", "mp4"]) && !v.contains(&"-x".to_string()));
         assert!(has(&v, ["--print", "after_move:FILE %(filepath)s"]));
 
-        let v = args(&job(Opts { container: Container::Mkv, ..opts() }), &f);
+        let v = argv(&job(Opts { container: Container::Mkv, ..opts() }), &f);
         assert!(has(&v, ["--remux-video", "mkv"]));
-        let v = args(&job(Opts { container: Container::Webm, ..opts() }), &f);
+        let v = argv(&job(Opts { container: Container::Webm, ..opts() }), &f);
         assert!(has(&v, ["--recode-video", "webm"]));
-        let v = args(&job(Opts { audio: true, ..opts() }), &f);
+        let v = argv(&job(Opts { audio: true, ..opts() }), &f);
         assert!(v.contains(&"-x".to_string()) && !v.contains(&"-f".to_string()));
-        let v = args(&job(Opts { height: Some(480), ..opts() }), &f);
+        let v = argv(&job(Opts { height: Some(480), ..opts() }), &f);
         assert!(has(&v, ["-f", &video_selector(Some(480))]));
     }
 
@@ -402,12 +475,12 @@ mod tests {
     fn args_name_from_page_title_and_escape_percent() {
         let mut j = job(opts());
         j.title = Some("Sconto 50% / offerta".into());
-        let v = args(&j, &PathBuf::from("b"));
+        let v = argv(&j, &PathBuf::from("b"));
         let o = v.iter().position(|a| a == "-o").map(|i| v[i + 1].clone()).unwrap();
         assert!(o.ends_with("Sconto 50%% offerta.%(ext)s"), "{o}");
         // Without a usable title yt-dlp names the file.
         j.title = Some("???".into());
-        let v = args(&j, &PathBuf::from("b"));
+        let v = argv(&j, &PathBuf::from("b"));
         let o = v.iter().position(|a| a == "-o").map(|i| v[i + 1].clone()).unwrap();
         assert!(o.ends_with("%(title).150B.%(ext)s"), "{o}");
     }
@@ -417,7 +490,7 @@ mod tests {
         let mut j = job(opts());
         j.referer = Some("https://site/page".into());
         j.ua = Some("UA/1".into());
-        let v = args(&j, &PathBuf::from("b"));
+        let v = argv(&j, &PathBuf::from("b"));
         assert!(has(&v, ["--referer", "https://site/page"]));
         assert!(v.contains(&"User-Agent:UA/1".to_string()));
     }

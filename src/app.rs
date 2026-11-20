@@ -9,12 +9,35 @@ use eframe::egui;
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Threads that ask yt-dlp about addresses and videos, so a long playlist fills in quickly.
 const FETCHERS: usize = 3;
 const THUMBERS: usize = 2;
+/// A page can announce as many addresses as it likes; the list keeps the first ones.
+const MAX_FOUND: usize = 50;
+/// Cards from the browser's Download button that may wait for the user at once.
+const MAX_BROWSER_CARDS: usize = 10;
+/// Size requests in flight at once; beyond that a file's size just stays unknown.
+const MAX_HEADS: usize = 4;
+static HEADS: AtomicUsize = AtomicUsize::new(0);
+
+/// One of the MAX_HEADS places for a size request, given back when dropped.
+struct HeadSlot;
+
+impl HeadSlot {
+    fn take() -> Option<HeadSlot> {
+        HEADS.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < MAX_HEADS).then_some(n + 1)).ok().map(|_| HeadSlot)
+    }
+}
+
+impl Drop for HeadSlot {
+    fn drop(&mut self) {
+        HEADS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 /// A media address the built-in browser has seen on the current page.
 #[derive(Clone)]
@@ -100,6 +123,13 @@ impl Shared {
         self.batches
     }
 
+    /// Forgets the pictures of cards that were removed, so a long session does not keep them all.
+    fn prune_thumbs(&mut self) {
+        let wanted: std::collections::HashSet<&str> =
+            self.jobs.iter().filter(|j| !j.hidden).filter_map(|j| j.thumb.as_deref()).collect();
+        self.thumbs.retain(|k, _| wanted.contains(k.as_str()));
+    }
+
     fn want_thumb(&mut self, url: &str) {
         if !self.thumbs.contains_key(url) {
             self.thumbs.insert(url.to_string(), None);
@@ -178,7 +208,7 @@ fn set_ready(s: &mut Shared, i: usize, info: Info) {
     if let Some(t) = thumb {
         s.want_thumb(&t);
     }
-    if s.set.auto_start {
+    if s.set.auto_start && !s.jobs[i].manual {
         start_job(s, i);
     }
 }
@@ -232,9 +262,9 @@ fn apply_fetched(s: &mut Shared, i: usize, r: Result<Fetched, String>) {
         Err(e) => s.jobs[i].state = State::NoInfo(e),
         Ok(Fetched::Video(info)) => set_ready(s, i, info),
         Ok(Fetched::List { title, entries }) => {
-            let (batch, dir, opts, referer, ua) = {
+            let (batch, dir, opts, referer, ua, manual) = {
                 let j = &s.jobs[i];
-                (j.batch, j.dir.clone(), j.opts, j.referer.clone(), j.ua.clone())
+                (j.batch, j.dir.clone(), j.opts, j.referer.clone(), j.ua.clone(), j.manual)
             };
             // The address gives way to the videos it holds.
             s.jobs[i].hidden = true;
@@ -244,6 +274,7 @@ fn apply_fetched(s: &mut Shared, i: usize, r: Result<Fetched, String>) {
                 let mut j = Job::pending(c, opts, dir.clone(), batch);
                 j.group = Some(title.clone());
                 j.is_entry = true;
+                j.manual = manual;
                 j.shown = (!name.is_empty()).then_some(name);
                 j.duration = duration;
                 j.thumb = thumb;
@@ -304,7 +335,10 @@ fn thumber(sy: Sy, ctx: egui::Context) {
         };
         if let Some(img) = thumbs::fetch(&url) {
             let tex = ctx.load_texture(url.clone(), img, egui::TextureOptions::LINEAR);
-            lock(m).thumbs.insert(url, Some(tex));
+            // Only if some card still wants it: the cards may have been removed meanwhile.
+            if let Some(slot) = lock(m).thumbs.get_mut(&url) {
+                *slot = Some(tex);
+            }
             ctx.request_repaint();
         }
     }
@@ -322,7 +356,10 @@ fn setup(sy: Sy, ctx: egui::Context) {
     match r {
         Ok(d) => {
             g.status = "Ready".into();
-            g.deps = Some(Ok((d.yt, d.bin)));
+            g.deps = Some(Ok((d.yt.clone(), d.bin)));
+            if d.may_be_old {
+                std::thread::spawn(move || deps::update(&d.yt));
+            }
         }
         Err(e) => {
             g.status = format!("Setup failed: {e}");
@@ -374,7 +411,7 @@ fn worker(sy: Sy, ctx: egui::Context) {
                 g.jobs[i].state = State::Done;
                 g.history.push(HistoryItem {
                     title,
-                    url: job.url.clone(),
+                    url: settings::plain_url(&job.url),
                     path: path.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
                     when: now(),
                 });
@@ -420,7 +457,8 @@ fn on_browser_line(sy: &Sy, ctx: &egui::Context, v: &serde_json::Value) {
     let kind_for = |url: &str, referer: &str| kind_of(url, url == referer);
     match v["kind"].as_str() {
         Some("download") => {
-            // The button in the browser: queue the best candidate, keep the others as fallbacks.
+            // The button in the browser. Any script on a page can send this same message, so it only adds a card
+            // that waits for Download in this window: nothing starts by itself, whatever the settings say.
             let title = text("title");
             let mut cs: Vec<Cand> = v["candidates"]
                 .as_array()
@@ -436,8 +474,16 @@ fn on_browser_line(sy: &Sy, ctx: &egui::Context, v: &serde_json::Value) {
                 .collect();
             if !cs.is_empty() {
                 let first = cs.remove(0);
-                queue(sy, first, None, cs);
-                ctx.request_repaint();
+                let mut s = lock(&sy.0);
+                let waiting = s.jobs.iter().filter(|j| j.manual && !j.is_entry && !j.hidden && matches!(j.state, State::Fetching | State::Ready)).count();
+                if waiting < MAX_BROWSER_CARDS {
+                    let i = s.add_pending(first);
+                    s.jobs[i].alts = cs;
+                    s.jobs[i].manual = true;
+                    drop(s);
+                    sy.1.notify_all();
+                    ctx.request_repaint();
+                }
             }
         }
         Some("title") => {
@@ -465,7 +511,7 @@ fn on_browser_line(sy: &Sy, ctx: &egui::Context, v: &serde_json::Value) {
                 s.found.clear();
                 s.armed = false;
                 s.page_title = text("title");
-            } else if s.found.iter().any(|x| x.url == url) {
+            } else if s.found.iter().any(|x| x.url == url) || s.found.len() >= MAX_FOUND {
                 return;
             } else {
                 s.arm(ctx);
@@ -477,9 +523,11 @@ fn on_browser_line(sy: &Sy, ctx: &egui::Context, v: &serde_json::Value) {
             s.found.sort_by_key(|f| rank(f.kind)); // stable: arrival order breaks ties
             drop(s);
             ctx.request_repaint();
-            if kind == Kind::File && size.is_none() {
+            let slot = if kind == Kind::File && size.is_none() { HeadSlot::take() } else { None };
+            if let Some(slot) = slot {
                 let (sy, ctx, ua) = (sy.clone(), ctx.clone(), text("ua"));
                 std::thread::spawn(move || {
+                    let _slot = slot;
                     if let Some(n) = head_size(&url, &referer, &ua) {
                         if let Some(f) = lock(&sy.0).found.iter_mut().find(|f| f.url == url) {
                             f.size = Some(n);
@@ -657,7 +705,8 @@ impl App {
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        let s = lock(&self.sy.0);
+        let mut s = lock(&self.sy.0);
+        s.prune_thumbs();
         Snapshot {
             found: s.found.clone(),
             jobs: s.jobs.clone(),
@@ -905,7 +954,66 @@ mod tests {
         assert_eq!((s.jobs[0].url.as_str(), s.jobs[0].title.clone()), (p, None));
         assert_eq!(s.jobs[0].alts.len(), 1);
         assert_eq!(s.jobs[0].alts[0].title.as_deref(), Some("Lezione 3"));
+        // It waits for the user: a card to read and choose, not a queued download.
+        assert_eq!(s.jobs[0].state, State::Fetching);
+        assert!(s.jobs[0].manual && s.queue.is_empty());
+    }
+
+    fn forged_download(n: usize) -> serde_json::Value {
+        json!({"kind": "download", "title": "x", "candidates": [
+            {"url": format!("https://evil.test/{n}.mp4"), "referer": "https://evil.test/", "ua": "UA"}
+        ]})
+    }
+
+    #[test]
+    fn a_download_message_never_starts_anything_even_with_start_at_once() {
+        let set = Settings { auto_start: true, ..Settings::default() };
+        let sy: Sy = Arc::new((Mutex::new(Shared::new(set, vec![])), Condvar::new()));
+        feed(&sy, forged_download(0));
+        let mut s = lock(&sy.0);
+        assert!(s.queue.is_empty() && s.jobs[0].state == State::Fetching);
+        // yt-dlp reads it: the card becomes Ready and stays there.
+        let info = Info { title: "t".into(), duration: None, qualities: vec![], has_audio: true, thumbnail: None };
+        apply_fetched(&mut s, 0, Ok(Fetched::Video(info.clone())));
+        assert_eq!(s.jobs[0].state, State::Ready);
+        assert!(s.queue.is_empty());
+        // The user's own Download does start it.
+        start_job(&mut s, 0);
         assert_eq!(s.queue.iter().copied().collect::<Vec<_>>(), [0]);
+        // Typed addresses keep honouring "Start at once".
+        drop(s);
+        assert!(add_typed(&sy, "https://example.com/typed"));
+        let mut s = lock(&sy.0);
+        apply_fetched(&mut s, 1, Ok(Fetched::Video(info)));
+        assert_eq!(s.jobs[1].state, State::Queued);
+    }
+
+    #[test]
+    fn the_videos_of_a_list_from_the_browser_also_wait_for_the_user() {
+        let set = Settings { auto_start: true, ..Settings::default() };
+        let sy: Sy = Arc::new((Mutex::new(Shared::new(set, vec![])), Condvar::new()));
+        feed(&sy, forged_download(0));
+        let info = Info { title: "t".into(), duration: None, qualities: vec![], has_audio: true, thumbnail: None };
+        let entry = Entry { url: "https://evil.test/1".into(), title: "one".into(), duration: None, thumb: None, info: Some(info) };
+        let mut s = lock(&sy.0);
+        apply_fetched(&mut s, 0, Ok(Fetched::List { title: "list".into(), entries: vec![entry] }));
+        assert_eq!(s.jobs[1].state, State::Ready);
+        assert!(s.queue.is_empty());
+    }
+
+    #[test]
+    fn a_flood_of_messages_from_a_page_stays_small() {
+        let sy: Sy = Arc::new((Mutex::new(Shared::new(Settings::default(), vec![])), Condvar::new()));
+        feed(&sy, page("https://evil.test/", "x"));
+        for n in 0..500 {
+            // A size is given, so no request goes out from the test.
+            feed(&sy, json!({"kind": "media", "url": format!("https://evil.test/{n}.mp4"), "referer": "https://evil.test/", "ua": "UA", "size": 9_000_000}));
+            feed(&sy, forged_download(n));
+        }
+        let s = lock(&sy.0);
+        assert_eq!(s.found.len(), MAX_FOUND);
+        assert_eq!(s.jobs.len(), MAX_BROWSER_CARDS);
+        assert!(s.queue.is_empty());
     }
 
     #[test]
@@ -949,6 +1057,27 @@ mod tests {
         let s = lock(&sy.0);
         assert_eq!(s.found.len(), 1);
         assert_eq!((s.found[0].kind, s.found[0].title.as_str()), (Kind::Page, "Two"));
+    }
+
+    #[test]
+    fn pictures_of_removed_cards_are_forgotten() {
+        let mut s = Shared::new(Settings::default(), vec![]);
+        let c = |u: &str| Cand { url: u.into(), referer: None, ua: None, title: None };
+        for n in 0..3 {
+            let mut j = Job::pending(c(&format!("https://v.test/{n}")), Opts::from_settings(&s.set), PathBuf::from("o"), 1);
+            j.thumb = Some(format!("https://img.test/{n}.jpg"));
+            s.jobs.push(j);
+            s.want_thumb(&format!("https://img.test/{n}.jpg"));
+        }
+        s.jobs[1].hidden = true;
+        s.prune_thumbs();
+        let mut keys: Vec<&str> = s.thumbs.keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(keys, ["https://img.test/0.jpg", "https://img.test/2.jpg"]);
+        // A picture asked for again after its card came back is fetched again.
+        s.jobs[1].hidden = false;
+        s.want_thumb("https://img.test/1.jpg");
+        assert_eq!(s.thumbs.len(), 3);
     }
 
     #[test]

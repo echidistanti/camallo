@@ -151,8 +151,39 @@ fn history_file() -> PathBuf {
     deps::data_dir().join("history.json")
 }
 
+/// An address without what can act as a key: the part after `?` or `#` (signed links carry tokens there)
+/// and any `user:password@`. The history is a plain file any program of the user can read.
+pub fn plain_url(u: &str) -> String {
+    let u = u.split(['?', '#']).next().unwrap_or(u);
+    match u.split_once("://") {
+        Some((scheme, rest)) => {
+            let (auth, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+            format!("{scheme}://{}{path}", auth.rsplit('@').next().unwrap_or(auth))
+        }
+        None => u.to_string(),
+    }
+}
+
+/// Cleans the addresses of old entries, written by versions that kept them whole. True when something changed.
+fn scrub(h: &mut [HistoryItem]) -> bool {
+    let mut changed = false;
+    for i in h {
+        let p = plain_url(&i.url);
+        if p != i.url {
+            i.url = p;
+            changed = true;
+        }
+    }
+    changed
+}
+
 pub fn load_history() -> Vec<HistoryItem> {
-    std::fs::read_to_string(history_file()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    let mut h: Vec<HistoryItem> =
+        std::fs::read_to_string(history_file()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    if scrub(&mut h) {
+        save_history(&h);
+    }
+    h
 }
 
 pub fn save_history(h: &[HistoryItem]) {
@@ -173,6 +204,20 @@ mod tests {
         assert_eq!(clean_subdir("a/b\\c"), "abc");
         assert_eq!(clean_subdir("  .. "), "");
         assert_eq!(clean_subdir("Corsi 2026"), "Corsi 2026");
+    }
+
+    #[test]
+    fn history_keeps_no_keys_from_the_address() {
+        assert_eq!(plain_url("https://cdn.test/v/master.m3u8?token=abc&exp=1#t=5"), "https://cdn.test/v/master.m3u8");
+        assert_eq!(plain_url("https://me:secret@site.test/a/b?x=1"), "https://site.test/a/b");
+        assert_eq!(plain_url("https://site.test"), "https://site.test");
+        assert_eq!(plain_url("https://site.test?k=1"), "https://site.test");
+        assert_eq!(plain_url("https://site.test/p@q"), "https://site.test/p@q");
+        let item = |u: &str| HistoryItem { title: "t".into(), url: u.into(), path: String::new(), when: 0 };
+        let mut h = vec![item("https://a.test/x?sig=1"), item("https://b.test/y")];
+        assert!(scrub(&mut h));
+        assert_eq!((h[0].url.as_str(), h[1].url.as_str()), ("https://a.test/x", "https://b.test/y"));
+        assert!(!scrub(&mut h));
     }
 
     #[test]
