@@ -26,6 +26,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#MyAppExe}
+SetupIconFile=..\assets\icon.ico
 UninstallDisplayName={#MyAppName}
 OutputDir=output
 OutputBaseFilename=camallo-{#MyAppVersion}-windows-x64-setup

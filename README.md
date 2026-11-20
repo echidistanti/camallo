@@ -149,6 +149,8 @@ cargo build --release --target x86_64-pc-windows-gnu
 
 The published executables are cross-compiled from Linux with the `x86_64-pc-windows-gnu` target and `mingw-w64`. Other toolchains have not been tried.
 
+The icon is embedded by `build.rs`, which needs `windres` (the `mingw-w64` package) when cross-compiling. Without it the build still succeeds, with a warning, and the executable has no icon.
+
 Release builds are optimised for size (`opt-level = "s"`, LTO, stripped symbols, `panic = "abort"`), which gives a single executable of roughly 10 MB.
 
 ### Tests that use the real tools
@@ -205,6 +207,8 @@ src/
 tests/           tests for detect.js
 vendor/          webview2-com-sys with the loader carried inside the program
 installer/       Inno Setup script
+assets/          the icon: icon.svg is the source, icon.ico goes into the executable, the PNGs into the windows
+build.rs         embeds the icon in the Windows executable
 .github/         workflow that builds the installer
 ```
 
@@ -220,6 +224,7 @@ Camallo is a tool for saving videos you are entitled to save: your own, ones und
 | [FFmpeg](https://ffmpeg.org/), build by [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) | merges, remuxes and converts | GPL or LGPL depending on the build (see gyan.dev); downloaded at first run, not redistributed here |
 | [egui / eframe](https://github.com/emilk/egui) | interface | MIT or Apache-2.0 |
 | [wry](https://github.com/tauri-apps/wry) and [tao](https://github.com/tauri-apps/tao) | built-in browser window | wry: Apache-2.0 or MIT; tao: Apache-2.0 |
+| [winresource](https://github.com/BenjaminRi/winresource) | build-time only: embeds the icon in the executable | MIT |
 | [webview2-com-sys](https://github.com/wravery/webview2-rs) | WebView2 bindings, vendored with changes | MIT, see [`vendor/webview2-com-sys/LICENSE`](vendor/webview2-com-sys/LICENSE) |
 | `WebView2Loader.dll` | WebView2 loader, from the webview2-com-sys package, signed by Microsoft and carried inside the executable | Microsoft WebView2 SDK terms |
 

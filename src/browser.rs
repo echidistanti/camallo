@@ -80,7 +80,11 @@ pub fn run(url: String) {
     // Messages from the page (any frame) and from the network reach the event loop, which owns the webview and the detector.
     let ev = EventLoopBuilder::<String>::with_user_event().build();
     let proxy = ev.create_proxy();
-    let win = WindowBuilder::new().with_title("Camallo Browser").build(&ev).expect("window");
+    let mut window = WindowBuilder::new().with_title("Camallo Browser");
+    if let Some((rgba, w, h)) = crate::icon::rgba() {
+        window = window.with_window_icon(tao::window::Icon::from_rgba(rgba, w, h).ok());
+    }
+    let win = window.build(&ev).expect("window");
     let page_proxy = proxy.clone();
     // The browser's own profile (cookies, logins) lives with the rest of Camallo's data. By default WebView2 puts it
     // next to the program, which fails in a folder that cannot be written and travels with a copy of the program.
