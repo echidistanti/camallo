@@ -88,7 +88,9 @@ impl Default for Settings {
             quality: Quality::Best,
             audio_only: false,
             parallel: 2,
-            dir: dirs::video_dir().unwrap_or_else(|| PathBuf::from(".")).join("Camallo"),
+            dir: dirs::video_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("Camallo"),
             subdir: String::new(),
             auto_start: false,
         }
@@ -103,7 +105,10 @@ fn settings_file() -> PathBuf {
 
 /// A single folder name: no separators, no traversal. Anything else is dropped.
 pub fn clean_subdir(s: &str) -> String {
-    let s: String = s.chars().filter(|c| !"<>:\"/\\|?*".contains(*c) && !c.is_control()).collect();
+    let s: String = s
+        .chars()
+        .filter(|c| !"<>:\"/\\|?*".contains(*c) && !c.is_control())
+        .collect();
     let s = s.trim().trim_matches('.').trim();
     s.chars().take(60).collect()
 }
@@ -132,7 +137,11 @@ impl Settings {
     /// Where files land: the chosen folder plus the optional sub-folder.
     pub fn out_dir(&self) -> PathBuf {
         let sub = clean_subdir(&self.subdir);
-        if sub.is_empty() { self.dir.clone() } else { self.dir.join(sub) }
+        if sub.is_empty() {
+            self.dir.clone()
+        } else {
+            self.dir.join(sub)
+        }
     }
 }
 
@@ -158,7 +167,10 @@ pub fn plain_url(u: &str) -> String {
     match u.split_once("://") {
         Some((scheme, rest)) => {
             let (auth, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-            format!("{scheme}://{}{path}", auth.rsplit('@').next().unwrap_or(auth))
+            format!(
+                "{scheme}://{}{path}",
+                auth.rsplit('@').next().unwrap_or(auth)
+            )
         }
         None => u.to_string(),
     }
@@ -178,8 +190,10 @@ fn scrub(h: &mut [HistoryItem]) -> bool {
 }
 
 pub fn load_history() -> Vec<HistoryItem> {
-    let mut h: Vec<HistoryItem> =
-        std::fs::read_to_string(history_file()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let mut h: Vec<HistoryItem> = std::fs::read_to_string(history_file())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
     if scrub(&mut h) {
         save_history(&h);
     }
@@ -208,21 +222,38 @@ mod tests {
 
     #[test]
     fn history_keeps_no_keys_from_the_address() {
-        assert_eq!(plain_url("https://cdn.test/v/master.m3u8?token=abc&exp=1#t=5"), "https://cdn.test/v/master.m3u8");
-        assert_eq!(plain_url("https://me:secret@site.test/a/b?x=1"), "https://site.test/a/b");
+        assert_eq!(
+            plain_url("https://cdn.test/v/master.m3u8?token=abc&exp=1#t=5"),
+            "https://cdn.test/v/master.m3u8"
+        );
+        assert_eq!(
+            plain_url("https://me:secret@site.test/a/b?x=1"),
+            "https://site.test/a/b"
+        );
         assert_eq!(plain_url("https://site.test"), "https://site.test");
         assert_eq!(plain_url("https://site.test?k=1"), "https://site.test");
         assert_eq!(plain_url("https://site.test/p@q"), "https://site.test/p@q");
-        let item = |u: &str| HistoryItem { title: "t".into(), url: u.into(), path: String::new(), when: 0 };
+        let item = |u: &str| HistoryItem {
+            title: "t".into(),
+            url: u.into(),
+            path: String::new(),
+            when: 0,
+        };
         let mut h = vec![item("https://a.test/x?sig=1"), item("https://b.test/y")];
         assert!(scrub(&mut h));
-        assert_eq!((h[0].url.as_str(), h[1].url.as_str()), ("https://a.test/x", "https://b.test/y"));
+        assert_eq!(
+            (h[0].url.as_str(), h[1].url.as_str()),
+            ("https://a.test/x", "https://b.test/y")
+        );
         assert!(!scrub(&mut h));
     }
 
     #[test]
     fn out_dir_joins_subdir() {
-        let mut s = Settings { dir: PathBuf::from("base"), ..Settings::default() };
+        let mut s = Settings {
+            dir: PathBuf::from("base"),
+            ..Settings::default()
+        };
         assert_eq!(s.out_dir(), PathBuf::from("base"));
         s.subdir = "x/y".into();
         assert_eq!(s.out_dir(), PathBuf::from("base").join("xy"));

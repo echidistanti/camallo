@@ -1,9 +1,9 @@
 use crate::deps;
-use crate::detector::{kind_of, Kind};
+use crate::detector::{Kind, kind_of};
 use crate::fetch::{self, Entry, Fetched};
 use crate::job::{self, Cand, Ctl, Job, Opts, State};
 use crate::probe::{self, Info};
-use crate::settings::{self, HistoryItem, Settings, MAX_PARALLEL};
+use crate::settings::{self, HistoryItem, MAX_PARALLEL, Settings};
 use crate::thumbs;
 use eframe::egui;
 use std::collections::{HashMap, VecDeque};
@@ -29,7 +29,12 @@ struct HeadSlot;
 
 impl HeadSlot {
     fn take() -> Option<HeadSlot> {
-        HEADS.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < MAX_HEADS).then_some(n + 1)).ok().map(|_| HeadSlot)
+        HEADS
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                (n < MAX_HEADS).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| HeadSlot)
     }
 }
 
@@ -81,6 +86,8 @@ struct Shared {
     armed: bool,
     /// yt-dlp and ffmpeg folder once ready, or why they are not.
     deps: Option<Result<(PathBuf, PathBuf), String>>,
+    /// Which yt-dlp it is and whether it was brought up to date; empty until that is known.
+    ytdlp: String,
     /// Addresses and videos waiting for yt-dlp to read them.
     fetchq: VecDeque<Fetch>,
     /// Pictures waiting to be fetched.
@@ -103,6 +110,7 @@ impl Shared {
             page_title: String::new(),
             armed: false,
             deps: None,
+            ytdlp: String::new(),
             fetchq: VecDeque::new(),
             thumbq: VecDeque::new(),
             thumbs: HashMap::new(),
@@ -114,7 +122,9 @@ impl Shared {
     fn arm(&mut self, ctx: &egui::Context) {
         if !self.armed {
             self.armed = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                egui::UserAttentionType::Informational,
+            ));
         }
     }
 
@@ -125,8 +135,12 @@ impl Shared {
 
     /// Forgets the pictures of cards that were removed, so a long session does not keep them all.
     fn prune_thumbs(&mut self) {
-        let wanted: std::collections::HashSet<&str> =
-            self.jobs.iter().filter(|j| !j.hidden).filter_map(|j| j.thumb.as_deref()).collect();
+        let wanted: std::collections::HashSet<&str> = self
+            .jobs
+            .iter()
+            .filter(|j| !j.hidden)
+            .filter_map(|j| j.thumb.as_deref())
+            .collect();
         self.thumbs.retain(|k, _| wanted.contains(k.as_str()));
     }
 
@@ -155,7 +169,10 @@ fn lock(m: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Straight into the download queue, without reading the address first (the big button).
@@ -175,9 +192,16 @@ fn queue(sy: &Sy, c: Cand, opts: Option<Opts>, alts: Vec<Cand>) {
 /// The text of the address field: a card appears at once and yt-dlp reads the address in the background.
 /// False when the text is not a link.
 fn add_typed(sy: &Sy, input: &str) -> bool {
-    let Some(url) = job::valid_url(input) else { return false };
+    let Some(url) = job::valid_url(input) else {
+        return false;
+    };
     let (m, cv) = &**sy;
-    lock(m).add_pending(Cand { url, referer: None, ua: None, title: None });
+    lock(m).add_pending(Cand {
+        url,
+        referer: None,
+        ua: None,
+        title: None,
+    });
     cv.notify_all();
     true
 }
@@ -227,7 +251,11 @@ fn start_job(s: &mut Shared, i: usize) {
 /// The new default type and quality also go to every video still waiting for its Download.
 fn apply_defaults(s: &mut Shared) {
     let (audio, cap) = (s.set.audio_only, s.set.quality.height());
-    for j in s.jobs.iter_mut().filter(|j| j.state == State::Ready && !j.hidden) {
+    for j in s
+        .jobs
+        .iter_mut()
+        .filter(|j| j.state == State::Ready && !j.hidden)
+    {
         j.opts.audio = audio;
         if let Some(info) = &j.info {
             j.opts.height = snap_height(cap, info);
@@ -245,7 +273,11 @@ fn retry(s: &mut Shared, i: usize) {
         }
         State::NoInfo(_) => {
             s.jobs[i].state = State::Fetching;
-            let task = if s.jobs[i].is_entry { Fetch::Detail(i) } else { Fetch::List(i) };
+            let task = if s.jobs[i].is_entry {
+                Fetch::Detail(i)
+            } else {
+                Fetch::List(i)
+            };
             s.fetchq.push_back(task);
         }
         _ => {}
@@ -264,13 +296,32 @@ fn apply_fetched(s: &mut Shared, i: usize, r: Result<Fetched, String>) {
         Ok(Fetched::List { title, entries }) => {
             let (batch, dir, opts, referer, ua, manual) = {
                 let j = &s.jobs[i];
-                (j.batch, j.dir.clone(), j.opts, j.referer.clone(), j.ua.clone(), j.manual)
+                (
+                    j.batch,
+                    j.dir.clone(),
+                    j.opts,
+                    j.referer.clone(),
+                    j.ua.clone(),
+                    j.manual,
+                )
             };
             // The address gives way to the videos it holds.
             s.jobs[i].hidden = true;
             s.jobs[i].state = State::Cancelled;
-            for Entry { url, title: name, duration, thumb, info } in entries {
-                let c = Cand { url, referer: referer.clone(), ua: ua.clone(), title: None };
+            for Entry {
+                url,
+                title: name,
+                duration,
+                thumb,
+                info,
+            } in entries
+            {
+                let c = Cand {
+                    url,
+                    referer: referer.clone(),
+                    ua: ua.clone(),
+                    title: None,
+                };
                 let mut j = Job::pending(c, opts, dir.clone(), batch);
                 j.group = Some(title.clone());
                 j.is_entry = true;
@@ -303,7 +354,9 @@ fn fetcher(sy: Sy, ctx: egui::Context) {
             let mut g = cv
                 .wait_while(g, |s| s.deps.is_none() || s.fetchq.is_empty())
                 .unwrap_or_else(|e| e.into_inner());
-            let Some(task) = g.fetchq.pop_front() else { continue };
+            let Some(task) = g.fetchq.pop_front() else {
+                continue;
+            };
             let i = task.index();
             if g.jobs[i].state != State::Fetching || g.jobs[i].hidden {
                 continue; // removed while waiting
@@ -329,8 +382,12 @@ fn thumber(sy: Sy, ctx: egui::Context) {
     loop {
         let url = {
             let g = lock(m);
-            let mut g = cv.wait_while(g, |s| s.thumbq.is_empty()).unwrap_or_else(|e| e.into_inner());
-            let Some(u) = g.thumbq.pop_front() else { continue };
+            let mut g = cv
+                .wait_while(g, |s| s.thumbq.is_empty())
+                .unwrap_or_else(|e| e.into_inner());
+            let Some(u) = g.thumbq.pop_front() else {
+                continue;
+            };
             u
         };
         if let Some(img) = thumbs::fetch(&url) {
@@ -344,6 +401,9 @@ fn thumber(sy: Sy, ctx: egui::Context) {
     }
 }
 
+/// The longest the queue waits at start-up for yt-dlp to finish looking for a newer release.
+const UPDATE_WAIT: Duration = Duration::from_secs(8);
+
 /// Gets yt-dlp and ffmpeg ready, then lets the workers start.
 fn setup(sy: Sy, ctx: egui::Context) {
     let (m, cv) = &*sy;
@@ -352,14 +412,35 @@ fn setup(sy: Sy, ctx: egui::Context) {
         ctx.request_repaint();
     };
     let r = deps::ensure(&mut |s| say(s));
+    if let Ok(d) = &r {
+        if d.may_be_old {
+            // The queue waits for yt-dlp to be brought up to date, so that no download starts while it swaps its
+            // own file. On a slow connection the wait ends after UPDATE_WAIT and the update goes on without it.
+            say("Checking yt-dlp...");
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (yt, sy2, ctx2) = (d.yt.clone(), sy.clone(), ctx.clone());
+            std::thread::spawn(move || {
+                let line = deps::update(&yt).line();
+                lock(&sy2.0).ytdlp = line;
+                ctx2.request_repaint();
+                let _ = tx.send(());
+            });
+            if rx.recv_timeout(UPDATE_WAIT).is_err() {
+                let mut g = lock(m);
+                if g.ytdlp.is_empty() {
+                    g.ytdlp = "yt-dlp is still being checked for updates".into();
+                }
+            }
+        } else {
+            let fresh = deps::Refresh::Fresh(deps::version(&d.yt).unwrap_or_else(|| "?".into()));
+            lock(m).ytdlp = fresh.line();
+        }
+    }
     let mut g = lock(m);
     match r {
         Ok(d) => {
             g.status = "Ready".into();
-            g.deps = Some(Ok((d.yt.clone(), d.bin)));
-            if d.may_be_old {
-                std::thread::spawn(move || deps::update(&d.yt));
-            }
+            g.deps = Some(Ok((d.yt, d.bin)));
         }
         Err(e) => {
             g.status = format!("Setup failed: {e}");
@@ -377,9 +458,13 @@ fn worker(sy: Sy, ctx: egui::Context) {
         let (i, job, deps) = {
             let g = lock(m);
             let mut g = cv
-                .wait_while(g, |s| s.deps.is_none() || s.queue.is_empty() || s.running >= s.set.parallel)
+                .wait_while(g, |s| {
+                    s.deps.is_none() || s.queue.is_empty() || s.running >= s.set.parallel
+                })
                 .unwrap_or_else(|e| e.into_inner());
-            let Some(i) = g.queue.pop_front() else { continue };
+            let Some(i) = g.queue.pop_front() else {
+                continue;
+            };
             if g.jobs[i].state != State::Queued {
                 continue; // cancelled while waiting
             }
@@ -402,8 +487,14 @@ fn worker(sy: Sy, ctx: egui::Context) {
         g.running -= 1;
         match r {
             Ok(path) => {
-                let stem = path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned());
-                let title = stem.clone().or_else(|| job.title.clone()).unwrap_or_else(|| job.url.clone());
+                let stem = path
+                    .as_ref()
+                    .and_then(|p| p.file_stem())
+                    .map(|s| s.to_string_lossy().into_owned());
+                let title = stem
+                    .clone()
+                    .or_else(|| job.title.clone())
+                    .unwrap_or_else(|| job.url.clone());
                 if g.jobs[i].title.is_none() {
                     g.jobs[i].title = stem;
                 }
@@ -412,12 +503,16 @@ fn worker(sy: Sy, ctx: egui::Context) {
                 g.history.push(HistoryItem {
                     title,
                     url: settings::plain_url(&job.url),
-                    path: path.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+                    path: path
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
                     when: now(),
                 });
                 settings::save_history(&g.history);
             }
-            Err(e) if job.ctl.is_cancelled() && e == "Cancelled" => g.jobs[i].state = State::Cancelled,
+            Err(e) if job.ctl.is_cancelled() && e == "Cancelled" => {
+                g.jobs[i].state = State::Cancelled
+            }
             Err(e) => g.jobs[i].state = State::Failed(e),
         }
         cv.notify_all();
@@ -428,7 +523,9 @@ fn worker(sy: Sy, ctx: egui::Context) {
 
 /// Size of a plain file from its headers, when the server answers.
 fn head_size(url: &str, referer: &str, ua: &str) -> Option<u64> {
-    let cfg = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(8))).build();
+    let cfg = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(8)))
+        .build();
     let agent: ureq::Agent = cfg.into();
     let mut r = agent.head(url);
     if !referer.is_empty() {
@@ -437,7 +534,14 @@ fn head_size(url: &str, referer: &str, ua: &str) -> Option<u64> {
     if !ua.is_empty() {
         r = r.header("User-Agent", ua);
     }
-    r.call().ok()?.headers().get("content-length")?.to_str().ok()?.parse().ok()
+    r.call()
+        .ok()?
+        .headers()
+        .get("content-length")?
+        .to_str()
+        .ok()?
+        .parse()
+        .ok()
 }
 
 fn rank(k: Kind) -> u8 {
@@ -452,7 +556,8 @@ fn rank(k: Kind) -> u8 {
 /// A line the browser process printed.
 fn on_browser_line(sy: &Sy, ctx: &egui::Context, v: &serde_json::Value) {
     let text = |k: &str| v[k].as_str().unwrap_or_default().to_string();
-    let opt = |c: &serde_json::Value, k: &str| c[k].as_str().filter(|x| !x.is_empty()).map(String::from);
+    let opt =
+        |c: &serde_json::Value, k: &str| c[k].as_str().filter(|x| !x.is_empty()).map(String::from);
     // A page candidate carries its own address as referer.
     let kind_for = |url: &str, referer: &str| kind_of(url, url == referer);
     match v["kind"].as_str() {
@@ -469,13 +574,27 @@ fn on_browser_line(sy: &Sy, ctx: &egui::Context, v: &serde_json::Value) {
                     let referer = opt(c, "referer");
                     let k = kind_for(&url, referer.as_deref().unwrap_or(""));
                     let title = (k.named_by_page() && !title.is_empty()).then(|| title.clone());
-                    Some(Cand { url, referer, ua: opt(c, "ua"), title })
+                    Some(Cand {
+                        url,
+                        referer,
+                        ua: opt(c, "ua"),
+                        title,
+                    })
                 })
                 .collect();
             if !cs.is_empty() {
                 let first = cs.remove(0);
                 let mut s = lock(&sy.0);
-                let waiting = s.jobs.iter().filter(|j| j.manual && !j.is_entry && !j.hidden && matches!(j.state, State::Fetching | State::Ready)).count();
+                let waiting = s
+                    .jobs
+                    .iter()
+                    .filter(|j| {
+                        j.manual
+                            && !j.is_entry
+                            && !j.hidden
+                            && matches!(j.state, State::Fetching | State::Ready)
+                    })
+                    .count();
                 if waiting < MAX_BROWSER_CARDS {
                     let i = s.add_pending(first);
                     s.jobs[i].alts = cs;
@@ -490,7 +609,11 @@ fn on_browser_line(sy: &Sy, ctx: &egui::Context, v: &serde_json::Value) {
             let new = text("title");
             let mut s = lock(&sy.0);
             let old = std::mem::replace(&mut s.page_title, new.clone());
-            for f in s.found.iter_mut().filter(|f| f.title.is_empty() || f.title == old) {
+            for f in s
+                .found
+                .iter_mut()
+                .filter(|f| f.title.is_empty() || f.title == old)
+            {
                 f.title = new.clone();
             }
             ctx.request_repaint();
@@ -516,14 +639,33 @@ fn on_browser_line(sy: &Sy, ctx: &egui::Context, v: &serde_json::Value) {
             } else {
                 s.arm(ctx);
             }
-            let kind = if page { Kind::Page } else { kind_for(&url, &referer) };
-            let title = if page { text("title") } else { s.page_title.clone() };
+            let kind = if page {
+                Kind::Page
+            } else {
+                kind_for(&url, &referer)
+            };
+            let title = if page {
+                text("title")
+            } else {
+                s.page_title.clone()
+            };
             let size = v["size"].as_u64();
-            s.found.push(Found { kind, url: url.clone(), referer: referer.clone(), ua: text("ua"), title, size });
+            s.found.push(Found {
+                kind,
+                url: url.clone(),
+                referer: referer.clone(),
+                ua: text("ua"),
+                title,
+                size,
+            });
             s.found.sort_by_key(|f| rank(f.kind)); // stable: arrival order breaks ties
             drop(s);
             ctx.request_repaint();
-            let slot = if kind == Kind::File && size.is_none() { HeadSlot::take() } else { None };
+            let slot = if kind == Kind::File && size.is_none() {
+                HeadSlot::take()
+            } else {
+                None
+            };
             if let Some(slot) = slot {
                 let (sy, ctx, ua) = (sy.clone(), ctx.clone(), text("ua"));
                 std::thread::spawn(move || {
@@ -555,12 +697,20 @@ fn demo(sy: &Sy, ctx: &egui::Context, mode: &str) {
         for y in 0..h {
             for x in 0..w {
                 let t = (x + y) as f32 / (w + h) as f32;
-                let (r, g, b) = (60.0 + 140.0 * t, 40.0 + 60.0 * (1.0 - t), 120.0 + 110.0 * ((n as f32 * 0.37 + t) % 1.0));
+                let (r, g, b) = (
+                    60.0 + 140.0 * t,
+                    40.0 + 60.0 * (1.0 - t),
+                    120.0 + 110.0 * ((n as f32 * 0.37 + t) % 1.0),
+                );
                 px.extend([r as u8, g as u8, b as u8, 255]);
             }
         }
         let key = format!("demo:{n}");
-        let tex = ctx.load_texture(key.clone(), egui::ColorImage::from_rgba_unmultiplied([w, h], &px), egui::TextureOptions::LINEAR);
+        let tex = ctx.load_texture(
+            key.clone(),
+            egui::ColorImage::from_rgba_unmultiplied([w, h], &px),
+            egui::TextureOptions::LINEAR,
+        );
         s.thumbs.insert(key.clone(), Some(tex));
         key
     };
@@ -569,15 +719,40 @@ fn demo(sy: &Sy, ctx: &egui::Context, mode: &str) {
     let info = |title: &str, dur: u64| Info {
         title: title.into(),
         duration: Some(dur),
-        qualities: vec![q(2160, Some(910_000_000)), q(1080, Some(240_000_000)), q(720, Some(120_000_000)), q(480, None)],
+        qualities: vec![
+            q(2160, Some(910_000_000)),
+            q(1080, Some(240_000_000)),
+            q(720, Some(120_000_000)),
+            q(480, None),
+        ],
         has_audio: true,
         thumbnail: None,
     };
-    let video = |h| Opts { audio: false, container: settings::Container::Mp4, height: h };
-    let audio = Opts { audio: true, container: settings::Container::Mp4, height: None };
+    let video = |h| Opts {
+        audio: false,
+        container: settings::Container::Mp4,
+        height: h,
+    };
+    let audio = Opts {
+        audio: true,
+        container: settings::Container::Mp4,
+        height: None,
+    };
     let mut jobs: Vec<Job> = vec![];
-    let mut add = |s: &mut Shared, batch: u64, group: Option<&str>, url: &str, title: &str, o: Opts, state: State, n: u8| {
-        let c = Cand { url: url.into(), referer: None, ua: None, title: None };
+    let mut add = |s: &mut Shared,
+                   batch: u64,
+                   group: Option<&str>,
+                   url: &str,
+                   title: &str,
+                   o: Opts,
+                   state: State,
+                   n: u8| {
+        let c = Cand {
+            url: url.into(),
+            referer: None,
+            ua: None,
+            title: None,
+        };
         let mut j = Job::pending(c, o, dir.clone(), batch);
         j.shown = Some(title.into());
         j.group = group.map(String::from);
@@ -597,35 +772,131 @@ fn demo(sy: &Sy, ctx: &egui::Context, mode: &str) {
     };
     if mode == "playlist" {
         let g = Some("Introduction to photography, 2026 lessons");
-        let titles = ["Lesson 1 - Introduction and method", "Lesson 2 - Light and exposure", "Lesson 3 - Composition", "Lesson 4 - Editing and archives", "Lesson 5 - Printing and display"];
+        let titles = [
+            "Lesson 1 - Introduction and method",
+            "Lesson 2 - Light and exposure",
+            "Lesson 3 - Composition",
+            "Lesson 4 - Editing and archives",
+            "Lesson 5 - Printing and display",
+        ];
         for (k, t) in titles.iter().enumerate() {
             let state = if k < 3 { State::Ready } else { State::Fetching };
-            add(&mut s, 1, g, &format!("https://v.test/{k}"), t, video(None), state, if k < 4 { k as u8 + 1 } else { 0 });
+            add(
+                &mut s,
+                1,
+                g,
+                &format!("https://v.test/{k}"),
+                t,
+                video(None),
+                state,
+                if k < 4 { k as u8 + 1 } else { 0 },
+            );
         }
         s.jobs = jobs;
         s.status = "Ready".into();
+        s.ytdlp = "yt-dlp 2026.11.20, up to date".into();
         return;
     }
-    add(&mut s, 7, None, "https://www.youtube.com/watch?v=abc", "Lesson 3 - Introduction to photography: light, composition and exposure, explained from scratch", video(Some(1080)), State::Running(43.0), 1);
-    add(&mut s, 6, None, "https://soundcloud.com/a/b", "A song with a rather long title", audio, State::Running(78.0), 2);
-    add(&mut s, 5, None, "https://vimeo.com/123", "Interview with a researcher", video(Some(720)), State::Ready, 3);
-    add(&mut s, 4, None, "https://cdn.site.test/video/master.m3u8", "Conference 2026", video(Some(720)), State::Done, 4);
+    add(
+        &mut s,
+        7,
+        None,
+        "https://www.youtube.com/watch?v=abc",
+        "Lesson 3 - Introduction to photography: light, composition and exposure, explained from scratch",
+        video(Some(1080)),
+        State::Running(43.0),
+        1,
+    );
+    add(
+        &mut s,
+        6,
+        None,
+        "https://soundcloud.com/a/b",
+        "A song with a rather long title",
+        audio,
+        State::Running(78.0),
+        2,
+    );
+    add(
+        &mut s,
+        5,
+        None,
+        "https://vimeo.com/123",
+        "Interview with a researcher",
+        video(Some(720)),
+        State::Ready,
+        3,
+    );
+    add(
+        &mut s,
+        4,
+        None,
+        "https://cdn.site.test/video/master.m3u8",
+        "Conference 2026",
+        video(Some(720)),
+        State::Done,
+        4,
+    );
     add(&mut s, 3, None, "https://example.com/private", "Private video", video(None), State::Failed("ERROR: [generic] Unable to download webpage: HTTP Error 403: Forbidden (caused by <HTTPError 403>)".into()), 0);
-    add(&mut s, 2, None, "https://example.org/clip", "Cancelled clip", video(None), State::Cancelled, 0);
-    add(&mut s, 1, None, "https://example.net/page-with-video", "https://example.net/page-with-video", video(None), State::NoInfo("Unsupported URL: https://example.net/page-with-video".into()), 0);
-    add(&mut s, 8, None, "https://example.net/being-read", "https://example.net/being-read", video(None), State::Fetching, 0);
+    add(
+        &mut s,
+        2,
+        None,
+        "https://example.org/clip",
+        "Cancelled clip",
+        video(None),
+        State::Cancelled,
+        0,
+    );
+    add(
+        &mut s,
+        1,
+        None,
+        "https://example.net/page-with-video",
+        "https://example.net/page-with-video",
+        video(None),
+        State::NoInfo("Unsupported URL: https://example.net/page-with-video".into()),
+        0,
+    );
+    add(
+        &mut s,
+        8,
+        None,
+        "https://example.net/being-read",
+        "https://example.net/being-read",
+        video(None),
+        State::Fetching,
+        0,
+    );
     s.jobs = jobs;
     s.status = "Ready".into();
+    s.ytdlp = "yt-dlp updated from 2026.11.01 to 2026.11.20".into();
     s.armed = true;
     s.page_title = "Lesson 3 - Introduction to photography | Courses Platform".into();
-    let f = |kind, url: &str, size| Found { kind, url: url.into(), referer: String::new(), ua: String::new(), title: String::new(), size };
+    let f = |kind, url: &str, size| Found {
+        kind,
+        url: url.into(),
+        referer: String::new(),
+        ua: String::new(),
+        title: String::new(),
+        size,
+    };
     s.found = vec![
         f(Kind::Page, "https://courses.site.test/lesson/3", None),
         f(Kind::Hls, "https://cdn.site.test/video/master.m3u8", None),
-        f(Kind::File, "https://cdn.site.test/video/720.mp4", Some(48_000_000)),
+        f(
+            Kind::File,
+            "https://cdn.site.test/video/720.mp4",
+            Some(48_000_000),
+        ),
     ];
     s.history = (0..4)
-        .map(|i| HistoryItem { title: format!("Downloaded video {i}"), url: "https://example.com".into(), path: "/tmp/a.mp4".into(), when: 0 })
+        .map(|i| HistoryItem {
+            title: format!("Downloaded video {i}"),
+            url: "https://example.com".into(),
+            path: "/tmp/a.mp4".into(),
+            when: 0,
+        })
         .collect();
 }
 
@@ -663,6 +934,7 @@ pub struct Snapshot {
     pub jobs: Vec<Job>,
     pub history: Vec<HistoryItem>,
     pub status: String,
+    pub ytdlp: String,
     pub set: Settings,
     pub armed: bool,
     pub page_title: String,
@@ -682,7 +954,10 @@ pub struct App {
 impl App {
     pub fn new(ctx: egui::Context) -> Self {
         let set = Settings::load();
-        let sy: Sy = Arc::new((Mutex::new(Shared::new(set, settings::load_history())), Condvar::new()));
+        let sy: Sy = Arc::new((
+            Mutex::new(Shared::new(set, settings::load_history())),
+            Condvar::new(),
+        ));
         #[cfg(debug_assertions)]
         if let Ok(mode) = std::env::var("CAMALLO_DEMO") {
             demo(&sy, &ctx, &mode);
@@ -701,7 +976,14 @@ impl App {
             let (s2, c2) = (sy.clone(), ctx.clone());
             std::thread::spawn(move || thumber(s2, c2));
         }
-        Self { sy, ctx, input: String::new(), bad_input: false, browser: None, show_settings: false }
+        Self {
+            sy,
+            ctx,
+            input: String::new(),
+            bad_input: false,
+            browser: None,
+            show_settings: false,
+        }
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -712,10 +994,15 @@ impl App {
             jobs: s.jobs.clone(),
             history: s.history.clone(),
             status: s.status.clone(),
+            ytdlp: s.ytdlp.clone(),
             set: s.set.clone(),
             armed: s.armed,
             page_title: s.page_title.clone(),
-            thumbs: s.thumbs.iter().filter_map(|(k, v)| Some((k.clone(), v.clone()?))).collect(),
+            thumbs: s
+                .thumbs
+                .iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.clone()?)))
+                .collect(),
         }
     }
 
@@ -723,9 +1010,14 @@ impl App {
         if let Some(mut c) = self.browser.take() {
             let _ = c.kill();
         }
-        let Ok(exe) = std::env::current_exe() else { return };
+        let Ok(exe) = std::env::current_exe() else {
+            return;
+        };
         let mut cmd = Command::new(exe);
-        let child = job::quiet(&mut cmd).args(["--browser", &url]).stdout(Stdio::piped()).spawn();
+        let child = job::quiet(&mut cmd)
+            .args(["--browser", &url])
+            .stdout(Stdio::piped())
+            .spawn();
         let Ok(mut child) = child else { return };
         let out = child.stdout.take().unwrap();
         let (sy, ctx) = (self.sy.clone(), self.ctx.clone());
@@ -790,7 +1082,9 @@ impl App {
                 cv.notify_all();
             }
             Action::HideBatch(b) => {
-                for j in lock(m).jobs.iter_mut().filter(|j| j.batch == b && !matches!(j.state, State::Queued | State::Running(_))) {
+                for j in lock(m).jobs.iter_mut().filter(|j| {
+                    j.batch == b && !matches!(j.state, State::Queued | State::Running(_))
+                }) {
                     j.hidden = true;
                 }
             }
@@ -816,7 +1110,11 @@ impl App {
             }
             Action::Hide(i) => lock(m).jobs[i].hidden = true,
             Action::ClearFinished => {
-                for j in lock(m).jobs.iter_mut().filter(|j| matches!(j.state, State::Done | State::Cancelled)) {
+                for j in lock(m)
+                    .jobs
+                    .iter_mut()
+                    .filter(|j| matches!(j.state, State::Done | State::Cancelled))
+                {
                     j.hidden = true;
                 }
             }
@@ -867,7 +1165,9 @@ fn reveal(p: &Path) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        let _ = Command::new("explorer").raw_arg(format!("/select,\"{}\"", p.display())).spawn();
+        let _ = Command::new("explorer")
+            .raw_arg(format!("/select,\"{}\"", p.display()))
+            .spawn();
     }
     #[cfg(not(windows))]
     open_path(p.parent().unwrap_or(p));
@@ -879,7 +1179,8 @@ impl Found {
             url: self.url.clone(),
             referer: nz(&self.referer),
             ua: nz(&self.ua),
-            title: (self.kind.named_by_page() && !self.title.is_empty()).then(|| self.title.clone()),
+            title: (self.kind.named_by_page() && !self.title.is_empty())
+                .then(|| self.title.clone()),
         }
     }
 }
@@ -899,8 +1200,12 @@ impl Drop for App {
             let _ = c.kill();
         }
         // Do not leave yt-dlp and ffmpeg running behind a closed window.
-        let running: Vec<Arc<Ctl>> =
-            lock(&self.sy.0).jobs.iter().filter(|j| matches!(j.state, State::Running(_))).map(|j| j.ctl.clone()).collect();
+        let running: Vec<Arc<Ctl>> = lock(&self.sy.0)
+            .jobs
+            .iter()
+            .filter(|j| matches!(j.state, State::Running(_)))
+            .map(|j| j.ctl.clone())
+            .collect();
         for c in running {
             c.cancel();
         }
@@ -925,7 +1230,10 @@ mod tests {
 
     #[test]
     fn browser_lines_build_the_found_list_and_the_download() {
-        let sy: Sy = Arc::new((Mutex::new(Shared::new(Settings::default(), vec![])), Condvar::new()));
+        let sy: Sy = Arc::new((
+            Mutex::new(Shared::new(Settings::default(), vec![])),
+            Condvar::new(),
+        ));
         let p = "https://site.test/p";
         feed(&sy, page(p, ""));
         // A late title reaches the page entry and the media seen afterwards.
@@ -967,13 +1275,22 @@ mod tests {
 
     #[test]
     fn a_download_message_never_starts_anything_even_with_start_at_once() {
-        let set = Settings { auto_start: true, ..Settings::default() };
+        let set = Settings {
+            auto_start: true,
+            ..Settings::default()
+        };
         let sy: Sy = Arc::new((Mutex::new(Shared::new(set, vec![])), Condvar::new()));
         feed(&sy, forged_download(0));
         let mut s = lock(&sy.0);
         assert!(s.queue.is_empty() && s.jobs[0].state == State::Fetching);
         // yt-dlp reads it: the card becomes Ready and stays there.
-        let info = Info { title: "t".into(), duration: None, qualities: vec![], has_audio: true, thumbnail: None };
+        let info = Info {
+            title: "t".into(),
+            duration: None,
+            qualities: vec![],
+            has_audio: true,
+            thumbnail: None,
+        };
         apply_fetched(&mut s, 0, Ok(Fetched::Video(info.clone())));
         assert_eq!(s.jobs[0].state, State::Ready);
         assert!(s.queue.is_empty());
@@ -990,24 +1307,52 @@ mod tests {
 
     #[test]
     fn the_videos_of_a_list_from_the_browser_also_wait_for_the_user() {
-        let set = Settings { auto_start: true, ..Settings::default() };
+        let set = Settings {
+            auto_start: true,
+            ..Settings::default()
+        };
         let sy: Sy = Arc::new((Mutex::new(Shared::new(set, vec![])), Condvar::new()));
         feed(&sy, forged_download(0));
-        let info = Info { title: "t".into(), duration: None, qualities: vec![], has_audio: true, thumbnail: None };
-        let entry = Entry { url: "https://evil.test/1".into(), title: "one".into(), duration: None, thumb: None, info: Some(info) };
+        let info = Info {
+            title: "t".into(),
+            duration: None,
+            qualities: vec![],
+            has_audio: true,
+            thumbnail: None,
+        };
+        let entry = Entry {
+            url: "https://evil.test/1".into(),
+            title: "one".into(),
+            duration: None,
+            thumb: None,
+            info: Some(info),
+        };
         let mut s = lock(&sy.0);
-        apply_fetched(&mut s, 0, Ok(Fetched::List { title: "list".into(), entries: vec![entry] }));
+        apply_fetched(
+            &mut s,
+            0,
+            Ok(Fetched::List {
+                title: "list".into(),
+                entries: vec![entry],
+            }),
+        );
         assert_eq!(s.jobs[1].state, State::Ready);
         assert!(s.queue.is_empty());
     }
 
     #[test]
     fn a_flood_of_messages_from_a_page_stays_small() {
-        let sy: Sy = Arc::new((Mutex::new(Shared::new(Settings::default(), vec![])), Condvar::new()));
+        let sy: Sy = Arc::new((
+            Mutex::new(Shared::new(Settings::default(), vec![])),
+            Condvar::new(),
+        ));
         feed(&sy, page("https://evil.test/", "x"));
         for n in 0..500 {
             // A size is given, so no request goes out from the test.
-            feed(&sy, json!({"kind": "media", "url": format!("https://evil.test/{n}.mp4"), "referer": "https://evil.test/", "ua": "UA", "size": 9_000_000}));
+            feed(
+                &sy,
+                json!({"kind": "media", "url": format!("https://evil.test/{n}.mp4"), "referer": "https://evil.test/", "ua": "UA", "size": 9_000_000}),
+            );
             feed(&sy, forged_download(n));
         }
         let s = lock(&sy.0);
@@ -1018,7 +1363,10 @@ mod tests {
 
     #[test]
     fn a_stream_or_a_play_arms_the_list_and_a_new_page_disarms_it() {
-        let sy: Sy = Arc::new((Mutex::new(Shared::new(Settings::default(), vec![])), Condvar::new()));
+        let sy: Sy = Arc::new((
+            Mutex::new(Shared::new(Settings::default(), vec![])),
+            Condvar::new(),
+        ));
         feed(&sy, page("https://site.test/1", "One"));
         assert!(!lock(&sy.0).armed, "a page alone is not a video");
         feed(&sy, json!({"kind": "play"}));
@@ -1026,7 +1374,10 @@ mod tests {
         feed(&sy, page("https://site.test/2", "Two"));
         assert!(!lock(&sy.0).armed);
         // A file whose size the network already told: no extra request, the size is kept.
-        feed(&sy, json!({"kind": "media", "url": "https://127.0.0.1:1/v.mp4", "referer": "https://site.test/2", "ua": "UA", "size": 5_000_000}));
+        feed(
+            &sy,
+            json!({"kind": "media", "url": "https://127.0.0.1:1/v.mp4", "referer": "https://site.test/2", "ua": "UA", "size": 5_000_000}),
+        );
         let s = lock(&sy.0);
         assert!(s.armed);
         let f = s.found.iter().find(|f| f.kind == Kind::File).unwrap();
@@ -1035,8 +1386,19 @@ mod tests {
 
     #[test]
     fn best_candidates_follow_the_ranking_and_stop_at_six() {
-        let f = |kind, url: &str| Found { kind, url: url.into(), referer: String::new(), ua: String::new(), title: "T".into(), size: None };
-        let mut v = vec![f(Kind::Embed, "https://e/1"), f(Kind::Page, "https://p/1"), f(Kind::Hls, "https://h/1.m3u8")];
+        let f = |kind, url: &str| Found {
+            kind,
+            url: url.into(),
+            referer: String::new(),
+            ua: String::new(),
+            title: "T".into(),
+            size: None,
+        };
+        let mut v = vec![
+            f(Kind::Embed, "https://e/1"),
+            f(Kind::Page, "https://p/1"),
+            f(Kind::Hls, "https://h/1.m3u8"),
+        ];
         for i in 0..6 {
             v.push(f(Kind::File, &format!("https://f/{i}.mp4")));
         }
@@ -1050,21 +1412,40 @@ mod tests {
 
     #[test]
     fn a_new_page_clears_the_list() {
-        let sy: Sy = Arc::new((Mutex::new(Shared::new(Settings::default(), vec![])), Condvar::new()));
+        let sy: Sy = Arc::new((
+            Mutex::new(Shared::new(Settings::default(), vec![])),
+            Condvar::new(),
+        ));
         feed(&sy, page("https://site.test/1", "One"));
-        feed(&sy, media("https://127.0.0.1:1/a.m3u8", "https://site.test/1"));
+        feed(
+            &sy,
+            media("https://127.0.0.1:1/a.m3u8", "https://site.test/1"),
+        );
         feed(&sy, page("https://site.test/2", "Two"));
         let s = lock(&sy.0);
         assert_eq!(s.found.len(), 1);
-        assert_eq!((s.found[0].kind, s.found[0].title.as_str()), (Kind::Page, "Two"));
+        assert_eq!(
+            (s.found[0].kind, s.found[0].title.as_str()),
+            (Kind::Page, "Two")
+        );
     }
 
     #[test]
     fn pictures_of_removed_cards_are_forgotten() {
         let mut s = Shared::new(Settings::default(), vec![]);
-        let c = |u: &str| Cand { url: u.into(), referer: None, ua: None, title: None };
+        let c = |u: &str| Cand {
+            url: u.into(),
+            referer: None,
+            ua: None,
+            title: None,
+        };
         for n in 0..3 {
-            let mut j = Job::pending(c(&format!("https://v.test/{n}")), Opts::from_settings(&s.set), PathBuf::from("o"), 1);
+            let mut j = Job::pending(
+                c(&format!("https://v.test/{n}")),
+                Opts::from_settings(&s.set),
+                PathBuf::from("o"),
+                1,
+            );
             j.thumb = Some(format!("https://img.test/{n}.jpg"));
             s.jobs.push(j);
             s.want_thumb(&format!("https://img.test/{n}.jpg"));
@@ -1082,8 +1463,16 @@ mod tests {
 
     #[test]
     fn cancelled_queued_job_is_skipped_and_retry_requeues() {
-        let sy: Sy = Arc::new((Mutex::new(Shared::new(Settings::default(), vec![])), Condvar::new()));
-        let c = Cand { url: "https://example.com/v".into(), referer: None, ua: None, title: None };
+        let sy: Sy = Arc::new((
+            Mutex::new(Shared::new(Settings::default(), vec![])),
+            Condvar::new(),
+        ));
+        let c = Cand {
+            url: "https://example.com/v".into(),
+            referer: None,
+            ua: None,
+            title: None,
+        };
         queue(&sy, c, None, vec![]);
         let mut s = lock(&sy.0);
         assert_eq!(s.jobs[0].state, State::Queued);
@@ -1097,13 +1486,24 @@ mod tests {
         Shared::new(Settings::default(), vec![])
     }
     fn addr(u: &str) -> Cand {
-        Cand { url: u.into(), referer: None, ua: None, title: None }
+        Cand {
+            url: u.into(),
+            referer: None,
+            ua: None,
+            title: None,
+        }
     }
     fn info(title: &str, heights: &[u32]) -> Info {
         Info {
             title: title.into(),
             duration: Some(60),
-            qualities: heights.iter().map(|h| probe::Quality { height: *h, size: None }).collect(),
+            qualities: heights
+                .iter()
+                .map(|h| probe::Quality {
+                    height: *h,
+                    size: None,
+                })
+                .collect(),
             has_audio: true,
             thumbnail: Some(format!("https://i/{title}.jpg")),
         }
@@ -1115,14 +1515,31 @@ mod tests {
         s.set.quality = Quality::P1080;
         let i = s.add_pending(addr("https://site.test/v"));
         assert_eq!(s.jobs[i].state, State::Fetching);
-        assert_eq!(s.fetchq.iter().copied().collect::<Vec<_>>(), [Fetch::List(i)]);
-        apply_fetched(&mut s, i, Ok(Fetched::Video(info("Solo", &[2160, 720, 480]))));
+        assert_eq!(
+            s.fetchq.iter().copied().collect::<Vec<_>>(),
+            [Fetch::List(i)]
+        );
+        apply_fetched(
+            &mut s,
+            i,
+            Ok(Fetched::Video(info("Solo", &[2160, 720, 480]))),
+        );
         let j = &s.jobs[i];
         assert_eq!(j.state, State::Ready);
         assert_eq!(j.label(), "Solo");
-        assert_eq!(j.opts.height, Some(720), "1080p is not offered: the best below it is");
-        assert!(s.queue.is_empty(), "nothing downloads until the user says so");
-        assert_eq!(s.thumbq.iter().cloned().collect::<Vec<_>>(), ["https://i/Solo.jpg"]);
+        assert_eq!(
+            j.opts.height,
+            Some(720),
+            "1080p is not offered: the best below it is"
+        );
+        assert!(
+            s.queue.is_empty(),
+            "nothing downloads until the user says so"
+        );
+        assert_eq!(
+            s.thumbq.iter().cloned().collect::<Vec<_>>(),
+            ["https://i/Solo.jpg"]
+        );
     }
 
     #[test]
@@ -1136,15 +1553,37 @@ mod tests {
             thumb: Some(format!("https://i/{n}.jpg")),
             info: with_info.then(|| info(n, &[720])),
         };
-        apply_fetched(&mut s, i, Ok(Fetched::List { title: "Corso".into(), entries: vec![e("a", false), e("b", true), e("c", false)] }));
+        apply_fetched(
+            &mut s,
+            i,
+            Ok(Fetched::List {
+                title: "Corso".into(),
+                entries: vec![e("a", false), e("b", true), e("c", false)],
+            }),
+        );
         assert!(s.jobs[i].hidden, "the address itself gives way");
         let cards: Vec<&Job> = s.jobs.iter().filter(|j| !j.hidden).collect();
-        assert_eq!(cards.iter().map(|j| j.label()).collect::<Vec<_>>(), ["a", "b", "c"]);
+        assert_eq!(
+            cards.iter().map(|j| j.label()).collect::<Vec<_>>(),
+            ["a", "b", "c"]
+        );
         let batch = s.jobs[i].batch;
-        assert!(cards.iter().all(|j| j.batch == batch && j.group.as_deref() == Some("Corso") && j.is_entry));
-        assert_eq!(cards.iter().map(|j| j.state.clone()).collect::<Vec<_>>(), [State::Fetching, State::Ready, State::Fetching]);
+        assert!(
+            cards
+                .iter()
+                .all(|j| j.batch == batch && j.group.as_deref() == Some("Corso") && j.is_entry)
+        );
+        assert_eq!(
+            cards.iter().map(|j| j.state.clone()).collect::<Vec<_>>(),
+            [State::Fetching, State::Ready, State::Fetching]
+        );
         // Only the videos that came without formats need their own request.
-        let details: Vec<Fetch> = s.fetchq.iter().copied().filter(|f| matches!(f, Fetch::Detail(_))).collect();
+        let details: Vec<Fetch> = s
+            .fetchq
+            .iter()
+            .copied()
+            .filter(|f| matches!(f, Fetch::Detail(_)))
+            .collect();
         assert_eq!(details, [Fetch::Detail(1), Fetch::Detail(3)]);
         assert_eq!(s.thumbq.len(), 3);
     }
@@ -1158,13 +1597,19 @@ mod tests {
         assert_eq!(s.jobs[i].state, State::NoInfo("Unsupported URL".into()));
         retry(&mut s, i);
         assert_eq!(s.jobs[i].state, State::Fetching);
-        assert_eq!(s.fetchq.iter().copied().collect::<Vec<_>>(), [Fetch::List(i)]);
+        assert_eq!(
+            s.fetchq.iter().copied().collect::<Vec<_>>(),
+            [Fetch::List(i)]
+        );
         // A video of a list is asked for on its own.
         s.jobs[i].is_entry = true;
         s.jobs[i].state = State::NoInfo("x".into());
         s.fetchq.clear();
         retry(&mut s, i);
-        assert_eq!(s.fetchq.iter().copied().collect::<Vec<_>>(), [Fetch::Detail(i)]);
+        assert_eq!(
+            s.fetchq.iter().copied().collect::<Vec<_>>(),
+            [Fetch::Detail(i)]
+        );
     }
 
     #[test]
@@ -1187,7 +1632,10 @@ mod tests {
         for i in 0..s.jobs.len() {
             start_job(&mut s, i);
         }
-        assert_eq!((s.jobs[a].state.clone(), s.jobs[b].state.clone()), (State::Queued, State::Fetching));
+        assert_eq!(
+            (s.jobs[a].state.clone(), s.jobs[b].state.clone()),
+            (State::Queued, State::Fetching)
+        );
         assert_eq!(s.jobs[a].opts.container, Container::Mkv);
         assert!(s.jobs[a].dir.ends_with("Corsi"));
         start_job(&mut s, a); // already queued: no second entry
@@ -1214,7 +1662,10 @@ mod tests {
         s.set.audio_only = true;
         s.set.quality = Quality::P720;
         apply_defaults(&mut s);
-        assert_eq!((s.jobs[a].opts.audio, s.jobs[a].opts.height), (true, Some(480)));
+        assert_eq!(
+            (s.jobs[a].opts.audio, s.jobs[a].opts.height),
+            (true, Some(480))
+        );
         assert_eq!((s.jobs[b].opts.audio, s.jobs[b].opts.height), (false, None));
     }
 
@@ -1224,7 +1675,11 @@ mod tests {
         assert_eq!(snap_height(None, &i), None);
         assert_eq!(snap_height(Some(1080), &i), Some(1080));
         assert_eq!(snap_height(Some(900), &i), Some(720));
-        assert_eq!(snap_height(Some(360), &i), None, "everything is taller: take the best");
+        assert_eq!(
+            snap_height(Some(360), &i),
+            None,
+            "everything is taller: take the best"
+        );
         assert_eq!(snap_height(Some(720), &Info::default()), None);
     }
 
@@ -1236,6 +1691,9 @@ mod tests {
         assert!(add_typed(&sy, "  https://site.test/video  "));
         let s = lock(&sy.0);
         assert_eq!(s.jobs.len(), 1);
-        assert_eq!((s.jobs[0].state.clone(), s.jobs[0].url.as_str()), (State::Fetching, "https://site.test/video"));
+        assert_eq!(
+            (s.jobs[0].state.clone(), s.jobs[0].url.as_str()),
+            (State::Fetching, "https://site.test/video")
+        );
     }
 }

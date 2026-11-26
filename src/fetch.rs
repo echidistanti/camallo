@@ -1,6 +1,6 @@
 //! What yt-dlp says about an address the user added: one video, or a list of them.
-use crate::job::{valid_url, Cand};
-use crate::probe::{parse_info, pick_thumb, run_json, Info};
+use crate::job::{Cand, valid_url};
+use crate::probe::{Info, parse_info, pick_thumb, run_json};
 use serde_json::Value;
 use std::path::Path;
 
@@ -25,13 +25,19 @@ pub enum Fetched {
 
 fn entry_of(e: &Value) -> Option<Entry> {
     // A video that is no longer available comes as null.
-    let url = ["webpage_url", "url"].iter().filter_map(|k| e[k].as_str()).find_map(valid_url)?;
+    let url = ["webpage_url", "url"]
+        .iter()
+        .filter_map(|k| e[k].as_str())
+        .find_map(valid_url)?;
     Some(Entry {
         url,
         title: e["title"].as_str().unwrap_or_default().trim().to_string(),
         duration: e["duration"].as_f64().map(|d| d as u64),
         thumb: pick_thumb(e),
-        info: e["formats"].as_array().filter(|f| !f.is_empty()).map(|_| parse_info(e)),
+        info: e["formats"]
+            .as_array()
+            .filter(|f| !f.is_empty())
+            .map(|_| parse_info(e)),
     })
 }
 
@@ -59,14 +65,23 @@ pub fn parse(v: &Value) -> Result<Fetched, String> {
     if entries.is_empty() {
         return Err("The list has no videos yt-dlp can read".into());
     }
-    let title = v["title"].as_str().map(str::trim).filter(|t| !t.is_empty()).unwrap_or("Playlist").to_string();
+    let title = v["title"]
+        .as_str()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .unwrap_or("Playlist")
+        .to_string();
     Ok(Fetched::List { title, entries })
 }
 
 /// Asks yt-dlp about an address: a video comes back whole, a list as its entries only.
 pub fn run(yt: &Path, c: &Cand) -> Result<Fetched, String> {
     let end = MAX_ENTRIES.to_string();
-    parse(&run_json(yt, c, &["--flat-playlist", "--playlist-end", &end])?)
+    parse(&run_json(
+        yt,
+        c,
+        &["--flat-playlist", "--playlist-end", &end],
+    )?)
 }
 
 #[cfg(test)]
@@ -95,13 +110,27 @@ mod tests {
                 {"_type": "url", "url": "https://www.youtube.com/watch?v=bbb", "title": "Due"}
             ]
         });
-        let Fetched::List { title, entries } = parse(&v).unwrap() else { panic!("expected a list") };
+        let Fetched::List { title, entries } = parse(&v).unwrap() else {
+            panic!("expected a list")
+        };
         assert_eq!(title, "Corso di media");
         let urls: Vec<&str> = entries.iter().map(|e| e.url.as_str()).collect();
-        assert_eq!(urls, ["https://www.youtube.com/watch?v=aaa", "https://www.youtube.com/watch?v=bbb"]);
-        assert_eq!((entries[0].title.as_str(), entries[0].duration), ("Uno", Some(60)));
+        assert_eq!(
+            urls,
+            [
+                "https://www.youtube.com/watch?v=aaa",
+                "https://www.youtube.com/watch?v=bbb"
+            ]
+        );
+        assert_eq!(
+            (entries[0].title.as_str(), entries[0].duration),
+            ("Uno", Some(60))
+        );
         assert_eq!(entries[0].thumb.as_deref(), Some("https://i/a.jpg"));
-        assert!(entries[0].info.is_none(), "a flat entry still needs its own request");
+        assert!(
+            entries[0].info.is_none(),
+            "a flat entry still needs its own request"
+        );
     }
 
     #[test]
@@ -111,26 +140,35 @@ mod tests {
             "entries": [{"webpage_url": "https://site.test/p#1", "url": "https://cdn/x.mp4", "title": "A",
                          "formats": [{"vcodec": "avc1", "acodec": "aac", "height": 480, "filesize": 10}]}]
         });
-        let Fetched::List { entries, .. } = parse(&v).unwrap() else { panic!() };
-        assert_eq!(entries[0].url, "https://site.test/p#1", "the page wins over the stream");
+        let Fetched::List { entries, .. } = parse(&v).unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            entries[0].url, "https://site.test/p#1",
+            "the page wins over the stream"
+        );
         let info = entries[0].info.as_ref().expect("formats were there");
         assert_eq!(info.qualities.len(), 1);
     }
 
     #[test]
     fn lists_inside_lists_are_opened_and_capped() {
-        let tab = |n: usize, p: &str| {
-            json!({"_type": "playlist", "entries": (0..n).map(|i| json!({"url": format!("https://v.test/{p}{i}"), "title": format!("{p}{i}")})).collect::<Vec<_>>()})
-        };
+        let tab = |n: usize, p: &str| json!({"_type": "playlist", "entries": (0..n).map(|i| json!({"url": format!("https://v.test/{p}{i}"), "title": format!("{p}{i}")})).collect::<Vec<_>>()});
         let v = json!({"_type": "playlist", "title": "Canale", "entries": [tab(3, "a"), tab(MAX_ENTRIES, "b")]});
-        let Fetched::List { entries, .. } = parse(&v).unwrap() else { panic!() };
+        let Fetched::List { entries, .. } = parse(&v).unwrap() else {
+            panic!()
+        };
         assert_eq!(entries.len(), MAX_ENTRIES);
-        assert_eq!((entries[0].title.as_str(), entries[3].title.as_str()), ("a0", "b0"));
+        assert_eq!(
+            (entries[0].title.as_str(), entries[3].title.as_str()),
+            ("a0", "b0")
+        );
     }
 
     #[test]
     fn an_empty_list_is_an_error_the_user_can_read() {
-        let e = parse(&json!({"_type": "playlist", "entries": [null, {"title": "no address"}]})).unwrap_err();
+        let e = parse(&json!({"_type": "playlist", "entries": [null, {"title": "no address"}]}))
+            .unwrap_err();
         assert!(e.contains("no videos"), "{e}");
         assert!(parse(&json!({"_type": "playlist", "entries": []})).is_err());
     }
@@ -140,19 +178,37 @@ mod tests {
     #[test]
     #[ignore]
     fn real_playlist_page_gives_one_entry_per_video_and_a_single_video_stays_single() {
-        let (Ok(yt), Ok(base)) = (std::env::var("CAMALLO_YTDLP"), std::env::var("CAMALLO_BASE")) else { return };
+        let (Ok(yt), Ok(base)) = (
+            std::env::var("CAMALLO_YTDLP"),
+            std::env::var("CAMALLO_BASE"),
+        ) else {
+            return;
+        };
         let yt = std::path::PathBuf::from(yt);
-        let cand = |u: String| Cand { url: u, referer: None, ua: None, title: None };
+        let cand = |u: String| Cand {
+            url: u,
+            referer: None,
+            ua: None,
+            title: None,
+        };
         match run(&yt, &cand(format!("{base}/playlist.html"))).unwrap() {
             Fetched::List { title, entries } => {
                 assert_eq!(title, "Corso di prova");
                 assert_eq!(entries.len(), 2);
-                assert!(entries.iter().all(|e| e.url.starts_with("http") && e.info.is_some()), "{entries:?}");
+                assert!(
+                    entries
+                        .iter()
+                        .all(|e| e.url.starts_with("http") && e.info.is_some()),
+                    "{entries:?}"
+                );
             }
             Fetched::Video(i) => panic!("a page with two videos is a list, got {i:?}"),
         }
         match run(&yt, &cand(format!("{base}/hls/master.m3u8"))).unwrap() {
-            Fetched::Video(i) => assert_eq!(i.qualities.iter().map(|q| q.height).collect::<Vec<_>>(), [360, 180]),
+            Fetched::Video(i) => assert_eq!(
+                i.qualities.iter().map(|q| q.height).collect::<Vec<_>>(),
+                [360, 180]
+            ),
             Fetched::List { .. } => panic!("one manifest is one video"),
         }
         assert!(run(&yt, &cand(format!("{base}/missing.mp4"))).is_err());

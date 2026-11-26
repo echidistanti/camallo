@@ -2,8 +2,9 @@
 //! Icons are drawn with shapes, so they do not depend on which glyphs a font has.
 
 use eframe::egui::{
-    self, pos2, vec2, Align2, Color32, CornerRadius, FontId, Margin, Painter, PointerButton, Pos2, Rect, Response,
-    ResizeDirection, RichText, Sense, Shape, Stroke, StrokeKind, TextStyle, Ui, Vec2, ViewportCommand,
+    self, Align2, Color32, CornerRadius, FontId, Margin, Painter, PointerButton, Pos2, Rect,
+    ResizeDirection, Response, RichText, Sense, Shape, Stroke, StrokeKind, TextStyle, Ui, Vec2,
+    ViewportCommand, pos2, vec2,
 };
 
 pub const BG: Color32 = Color32::from_rgb(0x1a, 0x1c, 0x1e);
@@ -102,13 +103,25 @@ pub fn fonts(ctx: &egui::Context) {
         let mut defs = egui::FontDefinitions::default();
         let mut found = false;
         if let Ok(bytes) = std::fs::read(dir.join("segoeui.ttf")) {
-            defs.font_data.insert("segoeui".into(), Arc::new(egui::FontData::from_owned(bytes)));
-            defs.families.entry(egui::FontFamily::Proportional).or_default().insert(0, "segoeui".into());
+            defs.font_data.insert(
+                "segoeui".into(),
+                Arc::new(egui::FontData::from_owned(bytes)),
+            );
+            defs.families
+                .entry(egui::FontFamily::Proportional)
+                .or_default()
+                .insert(0, "segoeui".into());
             found = true;
         }
         if let Ok(bytes) = std::fs::read(dir.join("seguisym.ttf")) {
-            defs.font_data.insert("seguisym".into(), Arc::new(egui::FontData::from_owned(bytes)));
-            defs.families.entry(egui::FontFamily::Proportional).or_default().push("seguisym".into());
+            defs.font_data.insert(
+                "seguisym".into(),
+                Arc::new(egui::FontData::from_owned(bytes)),
+            );
+            defs.families
+                .entry(egui::FontFamily::Proportional)
+                .or_default()
+                .push("seguisym".into());
             found = true;
         }
         if found {
@@ -135,7 +148,12 @@ impl Kind {
             Kind::Primary => (ON_ACCENT, ACCENT, ACCENT_HOVER, Stroke::NONE),
             Kind::Soft => (TEXT, FIELD, HOVER, Stroke::NONE),
             Kind::Ghost => (MUTED, Color32::TRANSPARENT, FIELD, Stroke::NONE),
-            Kind::Selected => (ACCENT_TEXT, ACCENT_DIM, Color32::from_rgb(0x38, 0x2d, 0x5e), Stroke::new(1.0, ACCENT)),
+            Kind::Selected => (
+                ACCENT_TEXT,
+                ACCENT_DIM,
+                Color32::from_rgb(0x38, 0x2d, 0x5e),
+                Stroke::new(1.0, ACCENT),
+            ),
         }
     }
 }
@@ -143,7 +161,9 @@ impl Kind {
 /// A rounded button. `size` is the text size, so the main action can be bigger.
 pub fn pill(ui: &mut Ui, text: &str, kind: Kind, size: f32) -> Response {
     let (fg, fill, hover, stroke) = kind.colors();
-    let galley = ui.painter().layout_no_wrap(text.to_owned(), FontId::proportional(size), fg);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), FontId::proportional(size), fg);
     let pad = vec2(size * 0.95, size * 0.5);
     let (rect, resp) = ui.allocate_exact_size(galley.size() + pad * 2.0, Sense::click());
     if ui.is_rect_visible(rect) {
@@ -157,11 +177,26 @@ pub fn pill(ui: &mut Ui, text: &str, kind: Kind, size: f32) -> Response {
         } else {
             fill
         };
-        let text_color = if kind == Kind::Ghost && resp.hovered() { TEXT } else { fg };
-        ui.painter().rect(rect, CornerRadius::same(255), bg, stroke, StrokeKind::Inside);
+        let text_color = if kind == Kind::Ghost && resp.hovered() {
+            TEXT
+        } else {
+            fg
+        };
+        ui.painter().rect(
+            rect,
+            CornerRadius::same(255),
+            bg,
+            stroke,
+            StrokeKind::Inside,
+        );
         let at = rect.center() - galley.size() / 2.0;
-        let text_color = if enabled { text_color } else { text_color.gamma_multiply(0.5) };
-        ui.painter().galley_with_override_text_color(at, galley, text_color);
+        let text_color = if enabled {
+            text_color
+        } else {
+            text_color.gamma_multiply(0.5)
+        };
+        ui.painter()
+            .galley_with_override_text_color(at, galley, text_color);
     }
     if resp.hovered() && ui.is_enabled() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -190,9 +225,13 @@ pub fn card<R>(ui: &mut Ui, fill: Color32, outline: Stroke, add: impl FnOnce(&mu
 
 /// A short label on a dark capsule: format, site, size.
 pub fn chip(ui: &mut Ui, text: &str) {
-    egui::Frame::new().fill(FIELD).corner_radius(CornerRadius::same(255)).inner_margin(Margin::symmetric(8, 2)).show(ui, |ui| {
-        ui.label(RichText::new(text).size(12.0).color(MUTED));
-    });
+    egui::Frame::new()
+        .fill(FIELD)
+        .corner_radius(CornerRadius::same(255))
+        .inner_margin(Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            ui.label(RichText::new(text).size(12.0).color(MUTED));
+        });
 }
 
 pub const BADGE: f32 = 52.0;
@@ -204,7 +243,11 @@ pub fn play_badge(ui: &mut Ui) {
     let c = rect.center();
     p.circle_filled(c, BADGE / 2.0 - 2.0, ACCENT);
     p.add(Shape::convex_polygon(
-        vec![c + vec2(-6.0, -10.0), c + vec2(-6.0, 10.0), c + vec2(10.0, 0.0)],
+        vec![
+            c + vec2(-6.0, -10.0),
+            c + vec2(-6.0, 10.0),
+            c + vec2(10.0, 0.0),
+        ],
         ON_ACCENT,
         Stroke::NONE,
     ));
@@ -223,8 +266,17 @@ pub fn close(ui: &mut Ui) -> Response {
         if hot {
             ui.painter().circle_filled(rect.center(), 13.0, FIELD);
         }
-        cross_lines(ui.painter(), rect.center(), 4.5, Stroke::new(1.6, if hot { TEXT } else { MUTED }));
-        ui.ctx().set_cursor_icon(if hot { egui::CursorIcon::PointingHand } else { egui::CursorIcon::Default });
+        cross_lines(
+            ui.painter(),
+            rect.center(),
+            4.5,
+            Stroke::new(1.6, if hot { TEXT } else { MUTED }),
+        );
+        ui.ctx().set_cursor_icon(if hot {
+            egui::CursorIcon::PointingHand
+        } else {
+            egui::CursorIcon::Default
+        });
     }
     resp
 }
@@ -236,7 +288,11 @@ pub fn bar(ui: &mut Ui, pct: f32) {
     ui.painter().rect_filled(rect, r, LINE);
     let w = rect.width() * (pct / 100.0).clamp(0.0, 1.0);
     if w > 0.5 {
-        ui.painter().rect_filled(Rect::from_min_size(rect.min, vec2(w.max(6.0), rect.height())), r, ACCENT);
+        ui.painter().rect_filled(
+            Rect::from_min_size(rect.min, vec2(w.max(6.0), rect.height())),
+            r,
+            ACCENT,
+        );
     }
 }
 
@@ -249,8 +305,23 @@ pub fn empty_icon(ui: &mut Ui) {
     p.circle_stroke(c, size / 2.0 - 2.0, Stroke::new(3.0, LINE));
     let ink = Stroke::new(3.5, MUTED);
     p.line_segment([c + vec2(0.0, -16.0), c + vec2(0.0, 8.0)], ink);
-    p.add(Shape::line(vec![c + vec2(-10.0, -2.0), c + vec2(0.0, 9.0), c + vec2(10.0, -2.0)], ink));
-    p.add(Shape::line(vec![c + vec2(-14.0, 13.0), c + vec2(-14.0, 18.0), c + vec2(14.0, 18.0), c + vec2(14.0, 13.0)], ink));
+    p.add(Shape::line(
+        vec![
+            c + vec2(-10.0, -2.0),
+            c + vec2(0.0, 9.0),
+            c + vec2(10.0, -2.0),
+        ],
+        ink,
+    ));
+    p.add(Shape::line(
+        vec![
+            c + vec2(-14.0, 13.0),
+            c + vec2(-14.0, 18.0),
+            c + vec2(14.0, 18.0),
+            c + vec2(14.0, 13.0),
+        ],
+        ink,
+    ));
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -275,11 +346,24 @@ pub fn draw_icon(p: &Painter, c: Pos2, icon: Icon, color: Color32) {
             p.line_segment([at(-5.0, 0.0), at(5.0, 0.0)], st(1.3));
         }
         Icon::Maximize => {
-            p.rect_stroke(Rect::from_center_size(c, vec2(10.0, 10.0)), CornerRadius::ZERO, st(1.3), StrokeKind::Middle);
+            p.rect_stroke(
+                Rect::from_center_size(c, vec2(10.0, 10.0)),
+                CornerRadius::ZERO,
+                st(1.3),
+                StrokeKind::Middle,
+            );
         }
         Icon::Restore => {
-            p.rect_stroke(Rect::from_center_size(at(-1.0, 1.0), vec2(8.0, 8.0)), CornerRadius::ZERO, st(1.3), StrokeKind::Middle);
-            p.add(Shape::line(vec![at(-2.0, -5.0), at(5.0, -5.0), at(5.0, 2.0)], st(1.3)));
+            p.rect_stroke(
+                Rect::from_center_size(at(-1.0, 1.0), vec2(8.0, 8.0)),
+                CornerRadius::ZERO,
+                st(1.3),
+                StrokeKind::Middle,
+            );
+            p.add(Shape::line(
+                vec![at(-2.0, -5.0), at(5.0, -5.0), at(5.0, 2.0)],
+                st(1.3),
+            ));
         }
         Icon::Gear => {
             for k in 0..8 {
@@ -292,14 +376,27 @@ pub fn draw_icon(p: &Painter, c: Pos2, icon: Icon, color: Color32) {
         }
         Icon::Folder => {
             p.add(Shape::closed_line(
-                vec![at(-8.0, -5.5), at(-3.0, -5.5), at(-1.0, -3.0), at(8.0, -3.0), at(8.0, 6.0), at(-8.0, 6.0)],
+                vec![
+                    at(-8.0, -5.5),
+                    at(-3.0, -5.5),
+                    at(-1.0, -3.0),
+                    at(8.0, -3.0),
+                    at(8.0, 6.0),
+                    at(-8.0, 6.0),
+                ],
                 st(1.7),
             ));
         }
         Icon::Trash => {
             p.line_segment([at(-7.0, -4.5), at(7.0, -4.5)], st(1.7));
-            p.add(Shape::line(vec![at(-2.5, -4.5), at(-2.5, -7.5), at(2.5, -7.5), at(2.5, -4.5)], st(1.5)));
-            p.add(Shape::closed_line(vec![at(-5.5, -2.5), at(5.5, -2.5), at(4.5, 7.5), at(-4.5, 7.5)], st(1.7)));
+            p.add(Shape::line(
+                vec![at(-2.5, -4.5), at(-2.5, -7.5), at(2.5, -7.5), at(2.5, -4.5)],
+                st(1.5),
+            ));
+            p.add(Shape::closed_line(
+                vec![at(-5.5, -2.5), at(5.5, -2.5), at(4.5, 7.5), at(-4.5, 7.5)],
+                st(1.7),
+            ));
         }
         Icon::Globe => {
             p.circle_stroke(c, 7.5, st(1.6));
@@ -337,7 +434,16 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, on: bool) -> Response {
             (false, true) => TEXT,
             _ => MUTED,
         };
-        draw_icon(ui.painter(), rect.center(), icon, if enabled { color } else { color.gamma_multiply(0.4) });
+        draw_icon(
+            ui.painter(),
+            rect.center(),
+            icon,
+            if enabled {
+                color
+            } else {
+                color.gamma_multiply(0.4)
+            },
+        );
     }
     if resp.hovered() && ui.is_enabled() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -349,10 +455,18 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, on: bool) -> Response {
 fn window_button(ui: &mut Ui, icon: Icon, danger: bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(46.0, ui.available_height()), Sense::click());
     if resp.hovered() {
-        let fill = if danger { Color32::from_rgb(0xe8, 0x11, 0x23) } else { Color32::from_rgb(0x2a, 0x2c, 0x2f) };
+        let fill = if danger {
+            Color32::from_rgb(0xe8, 0x11, 0x23)
+        } else {
+            Color32::from_rgb(0x2a, 0x2c, 0x2f)
+        };
         ui.painter().rect_filled(rect, CornerRadius::ZERO, fill);
     }
-    let color = if resp.hovered() { Color32::WHITE } else { MUTED };
+    let color = if resp.hovered() {
+        Color32::WHITE
+    } else {
+        MUTED
+    };
     draw_icon(ui.painter(), rect.center(), icon, color);
     resp
 }
@@ -365,7 +479,11 @@ pub fn title_bar(ui: &mut Ui) {
     let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
     let bar = ui.max_rect();
     // Added first, so the buttons on top of it win the pointer where they overlap.
-    let drag = ui.interact(bar, ui.scope_id().with("title_drag"), Sense::click_and_drag());
+    let drag = ui.interact(
+        bar,
+        ui.scope_id().with("title_drag"),
+        Sense::click_and_drag(),
+    );
     if drag.drag_started_by(PointerButton::Primary) {
         ctx.send_viewport_cmd(ViewportCommand::StartDrag);
     }
@@ -374,20 +492,45 @@ pub fn title_bar(ui: &mut Ui) {
     }
     let p = ui.painter();
     let mid = pos2(bar.left() + 25.0, bar.center().y);
-    p.rect_filled(Rect::from_center_size(mid, vec2(16.0, 16.0)), CornerRadius::same(5), ACCENT);
-    p.add(Shape::convex_polygon(vec![mid + vec2(-2.5, -4.0), mid + vec2(-2.5, 4.0), mid + vec2(4.0, 0.0)], ON_ACCENT, Stroke::NONE));
-    p.text(pos2(bar.left() + 40.0, bar.center().y), Align2::LEFT_CENTER, "Camallo", FontId::proportional(13.0), MUTED);
+    p.rect_filled(
+        Rect::from_center_size(mid, vec2(16.0, 16.0)),
+        CornerRadius::same(5),
+        ACCENT,
+    );
+    p.add(Shape::convex_polygon(
+        vec![
+            mid + vec2(-2.5, -4.0),
+            mid + vec2(-2.5, 4.0),
+            mid + vec2(4.0, 0.0),
+        ],
+        ON_ACCENT,
+        Stroke::NONE,
+    ));
+    p.text(
+        pos2(bar.left() + 40.0, bar.center().y),
+        Align2::LEFT_CENTER,
+        "Camallo",
+        FontId::proportional(13.0),
+        MUTED,
+    );
 
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         if window_button(ui, Icon::Close, true).clicked() {
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
-        let (icon, tip) = if maximized { (Icon::Restore, "Restore") } else { (Icon::Maximize, "Maximize") };
+        let (icon, tip) = if maximized {
+            (Icon::Restore, "Restore")
+        } else {
+            (Icon::Maximize, "Maximize")
+        };
         if window_button(ui, icon, false).on_hover_text(tip).clicked() {
             ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
         }
-        if window_button(ui, Icon::Minimize, false).on_hover_text("Minimize").clicked() {
+        if window_button(ui, Icon::Minimize, false)
+            .on_hover_text("Minimize")
+            .clicked()
+        {
             ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
         }
     });
@@ -396,7 +539,12 @@ pub fn title_bar(ui: &mut Ui) {
 /// Which edge or corner of the window a point is on, within `m` pixels of the border.
 pub fn edge_at(p: Pos2, r: Rect, m: f32) -> Option<ResizeDirection> {
     use ResizeDirection::*;
-    let (l, rt, t, b) = (p.x - r.left() < m, r.right() - p.x < m, p.y - r.top() < m, r.bottom() - p.y < m);
+    let (l, rt, t, b) = (
+        p.x - r.left() < m,
+        r.right() - p.x < m,
+        p.y - r.top() < m,
+        r.bottom() - p.y < m,
+    );
     match (l, rt, t, b) {
         (true, _, true, _) => Some(NorthWest),
         (_, true, true, _) => Some(NorthEast),
@@ -411,8 +559,8 @@ pub fn edge_at(p: Pos2, r: Rect, m: f32) -> Option<ResizeDirection> {
 }
 
 fn resize_cursor(d: ResizeDirection) -> egui::CursorIcon {
-    use egui::CursorIcon as C;
     use ResizeDirection::*;
+    use egui::CursorIcon as C;
     match d {
         North => C::ResizeNorth,
         South => C::ResizeSouth,
@@ -427,8 +575,15 @@ fn resize_cursor(d: ResizeDirection) -> egui::CursorIcon {
 
 /// Without the system frame the window cannot be resized from its border unless this does it.
 pub fn resize_edges(ctx: &egui::Context) {
-    let (maximized, pos) = ctx.input(|i| (i.viewport().maximized.unwrap_or(false), i.pointer.hover_pos()));
-    let Some(pos) = pos.filter(|_| !maximized) else { return };
+    let (maximized, pos) = ctx.input(|i| {
+        (
+            i.viewport().maximized.unwrap_or(false),
+            i.pointer.hover_pos(),
+        )
+    });
+    let Some(pos) = pos.filter(|_| !maximized) else {
+        return;
+    };
     if let Some(dir) = edge_at(pos, ctx.content_rect(), 6.0) {
         ctx.set_cursor_icon(resize_cursor(dir));
         if ctx.input(|i| i.pointer.primary_pressed()) {
@@ -439,13 +594,23 @@ pub fn resize_edges(ctx: &egui::Context) {
 
 /// A thin line around the window, since there is no frame to show where it ends.
 pub fn border(ctx: &egui::Context) {
-    ctx.layer_painter(egui::LayerId::debug()).rect_stroke(ctx.content_rect(), CornerRadius::ZERO, Stroke::new(1.0, LINE), StrokeKind::Inside);
+    ctx.layer_painter(egui::LayerId::debug()).rect_stroke(
+        ctx.content_rect(),
+        CornerRadius::ZERO,
+        Stroke::new(1.0, LINE),
+        StrokeKind::Inside,
+    );
 }
 
 pub const THUMB: Vec2 = vec2(128.0, 72.0);
 
 /// The picture of a video; a dark box with a spinner while it is read, or a play mark when there is none.
-pub fn thumb(ui: &mut Ui, tex: Option<&egui::TextureHandle>, reading: bool, duration: Option<&str>) {
+pub fn thumb(
+    ui: &mut Ui,
+    tex: Option<&egui::TextureHandle>,
+    reading: bool,
+    duration: Option<&str>,
+) {
     let (rect, _) = ui.allocate_exact_size(THUMB, Sense::hover());
     let round = CornerRadius::same(8);
     match tex {
@@ -453,19 +618,34 @@ pub fn thumb(ui: &mut Ui, tex: Option<&egui::TextureHandle>, reading: bool, dura
         None => {
             ui.painter().rect_filled(rect, round, FIELD);
             if reading {
-                egui::Spinner::new().size(22.0).color(MUTED).paint_at(ui, Rect::from_center_size(rect.center(), vec2(22.0, 22.0)));
+                egui::Spinner::new()
+                    .size(22.0)
+                    .color(MUTED)
+                    .paint_at(ui, Rect::from_center_size(rect.center(), vec2(22.0, 22.0)));
             } else {
                 let c = rect.center();
-                ui.painter().add(Shape::convex_polygon(vec![c + vec2(-6.0, -9.0), c + vec2(-6.0, 9.0), c + vec2(11.0, 0.0)], LINE, Stroke::NONE));
+                ui.painter().add(Shape::convex_polygon(
+                    vec![
+                        c + vec2(-6.0, -9.0),
+                        c + vec2(-6.0, 9.0),
+                        c + vec2(11.0, 0.0),
+                    ],
+                    LINE,
+                    Stroke::NONE,
+                ));
             }
         }
     }
     if let Some(d) = duration {
-        let galley = ui.painter().layout_no_wrap(d.to_owned(), FontId::proportional(11.5), Color32::WHITE);
+        let galley =
+            ui.painter()
+                .layout_no_wrap(d.to_owned(), FontId::proportional(11.5), Color32::WHITE);
         let size = galley.size() + vec2(10.0, 4.0);
         let tag = Rect::from_min_size(rect.right_bottom() - size - vec2(5.0, 5.0), size);
-        ui.painter().rect_filled(tag, CornerRadius::same(4), Color32::from_black_alpha(190));
-        ui.painter().galley(tag.center() - galley.size() / 2.0, galley, Color32::WHITE);
+        ui.painter()
+            .rect_filled(tag, CornerRadius::same(4), Color32::from_black_alpha(190));
+        ui.painter()
+            .galley(tag.center() - galley.size() / 2.0, galley, Color32::WHITE);
     }
 }
 
@@ -485,8 +665,14 @@ mod tests {
 
     #[test]
     fn host_is_the_site_without_noise() {
-        assert_eq!(host_of("https://www.youtube.com/watch?v=abc"), "youtube.com");
-        assert_eq!(host_of("http://user:pw@cdn.site.test:8080/a/b.m3u8"), "cdn.site.test");
+        assert_eq!(
+            host_of("https://www.youtube.com/watch?v=abc"),
+            "youtube.com"
+        );
+        assert_eq!(
+            host_of("http://user:pw@cdn.site.test:8080/a/b.m3u8"),
+            "cdn.site.test"
+        );
         assert_eq!(host_of("https://vimeo.com"), "vimeo.com");
         assert_eq!(host_of("https://a.test?x=1"), "a.test");
         assert_eq!(host_of("not a url"), "not a url");
@@ -505,6 +691,10 @@ mod tests {
         assert_eq!(edge_at(pos2(99.0, 1.0), r, 6.0), Some(NorthEast));
         assert_eq!(edge_at(pos2(1.0, 79.0), r, 6.0), Some(SouthWest));
         assert_eq!(edge_at(pos2(99.0, 79.0), r, 6.0), Some(SouthEast));
-        assert_eq!(edge_at(pos2(7.0, 40.0), r, 6.0), None, "just inside the zone");
+        assert_eq!(
+            edge_at(pos2(7.0, 40.0), r, 6.0),
+            None,
+            "just inside the zone"
+        );
     }
 }

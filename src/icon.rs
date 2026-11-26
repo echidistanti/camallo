@@ -5,7 +5,9 @@ const PNG: &[u8] = include_bytes!("../assets/icon-128.png");
 
 /// RGBA pixels, width and height.
 pub fn rgba() -> Option<(Vec<u8>, u32, u32)> {
-    let img = image::load_from_memory_with_format(PNG, image::ImageFormat::Png).ok()?.to_rgba8();
+    let img = image::load_from_memory_with_format(PNG, image::ImageFormat::Png)
+        .ok()?
+        .to_rgba8();
     let (w, h) = img.dimensions();
     Some((img.into_raw(), w, h))
 }

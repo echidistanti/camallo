@@ -2,7 +2,7 @@
 // when to show the Download button, what to tell the main window, and in which order the
 // candidate addresses are tried.
 use crate::job::Cand;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const SHOW: &str = "window.__camallo&&window.__camallo.show()";
 pub const HIDE: &str = "window.__camallo&&window.__camallo.hide()";
@@ -115,7 +115,10 @@ impl Detector {
     pub fn ranked(&self) -> Vec<Cand> {
         let mut v: Vec<&Seen> = self.seen.iter().collect();
         v.sort_by_key(|s| rank(s));
-        v.into_iter().take(MAX_TRIES).map(|s| s.cand.clone()).collect()
+        v.into_iter()
+            .take(MAX_TRIES)
+            .map(|s| s.cand.clone())
+            .collect()
     }
 
     fn line(&self, kind: &str, c: &Cand, size: Option<u64>) -> String {
@@ -123,9 +126,18 @@ impl Detector {
     }
 
     pub fn on_message(&mut self, raw: &str) -> Vec<Effect> {
-        let Ok(v) = serde_json::from_str::<Value>(raw) else { return vec![] };
+        let Ok(v) = serde_json::from_str::<Value>(raw) else {
+            return vec![];
+        };
         let text = |k: &str| v[k].as_str().filter(|x| !x.is_empty()).map(String::from);
-        let cand = || text("url").map(|url| Cand { url, referer: text("referer"), ua: text("ua"), title: None });
+        let cand = || {
+            text("url").map(|url| Cand {
+                url,
+                referer: text("referer"),
+                ua: text("ua"),
+                title: None,
+            })
+        };
         match v["kind"].as_str() {
             Some("page") => {
                 let Some(c) = cand() else { return vec![] };
@@ -143,8 +155,15 @@ impl Detector {
                 self.title = text("title").unwrap_or_default();
                 self.ua = text("ua").unwrap_or_default();
                 self.shown = !kept.is_empty();
-                let mut e = vec![Effect::Print(self.line("page", &c, None)), Effect::Eval(HIDE)];
-                self.seen.push(Seen { cand: c, page: true, size: None });
+                let mut e = vec![
+                    Effect::Print(self.line("page", &c, None)),
+                    Effect::Eval(HIDE),
+                ];
+                self.seen.push(Seen {
+                    cand: c,
+                    page: true,
+                    size: None,
+                });
                 for k in kept {
                     e.push(Effect::Print(self.line("media", &k.cand, k.size)));
                     self.seen.push(k);
@@ -161,11 +180,15 @@ impl Detector {
                     return vec![];
                 }
                 self.title = t;
-                vec![Effect::Print(json!({"kind": "title", "title": self.title}).to_string())]
+                vec![Effect::Print(
+                    json!({"kind": "title", "title": self.title}).to_string(),
+                )]
             }
             Some("media") => {
                 let Some(mut c) = cand() else { return vec![] };
-                if self.seen.len() >= MAX_SEEN || self.seen.iter().any(|s| norm(&s.cand.url) == norm(&c.url)) {
+                if self.seen.len() >= MAX_SEEN
+                    || self.seen.iter().any(|s| norm(&s.cand.url) == norm(&c.url))
+                {
                     return vec![];
                 }
                 // The network does not always report the request headers; the page's own stand in.
@@ -177,7 +200,11 @@ impl Detector {
                 }
                 let size = v["size"].as_u64();
                 let line = self.line("media", &c, size);
-                self.seen.push(Seen { cand: c, page: false, size });
+                self.seen.push(Seen {
+                    cand: c,
+                    page: false,
+                    size,
+                });
                 let mut e = vec![Effect::Print(line)];
                 if !self.shown {
                     self.shown = true;
@@ -187,15 +214,22 @@ impl Detector {
             }
             Some("play") if !self.shown => {
                 self.shown = true;
-                vec![Effect::Print(json!({"kind": "play"}).to_string()), Effect::Eval(SHOW)]
+                vec![
+                    Effect::Print(json!({"kind": "play"}).to_string()),
+                    Effect::Eval(SHOW),
+                ]
             }
             Some("download") => {
                 let list = self.ranked();
                 if list.is_empty() {
                     return vec![];
                 }
-                let c: Vec<Value> = list.iter().map(|c| json!({"url": c.url, "referer": c.referer, "ua": c.ua})).collect();
-                let line = json!({"kind": "download", "title": self.title, "candidates": c}).to_string();
+                let c: Vec<Value> = list
+                    .iter()
+                    .map(|c| json!({"url": c.url, "referer": c.referer, "ua": c.ua}))
+                    .collect();
+                let line =
+                    json!({"kind": "download", "title": self.title, "candidates": c}).to_string();
                 vec![Effect::Print(line), Effect::Eval(SENT)]
             }
             _ => vec![],
@@ -214,14 +248,22 @@ mod tests {
         json!({"kind": "page", "url": url, "referer": url, "ua": "UA", "title": title}).to_string()
     }
     fn shows(e: &[Effect]) -> usize {
-        e.iter().filter(|x| matches!(x, Effect::Eval(js) if *js == SHOW)).count()
+        e.iter()
+            .filter(|x| matches!(x, Effect::Eval(js) if *js == SHOW))
+            .count()
     }
     fn urls(d: &Detector) -> Vec<String> {
         d.ranked().into_iter().map(|c| c.url).collect()
     }
     fn printed(e: &[Effect]) -> Vec<Value> {
         e.iter()
-            .filter_map(|x| if let Effect::Print(l) = x { serde_json::from_str(l).ok() } else { None })
+            .filter_map(|x| {
+                if let Effect::Print(l) = x {
+                    serde_json::from_str(l).ok()
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 
@@ -231,7 +273,10 @@ mod tests {
         assert_eq!(kind_of("https://a.com/x/manifest.MPD", false), Kind::Dash);
         assert_eq!(kind_of("https://a.com/v.ism/manifest", false), Kind::Smooth);
         assert_eq!(kind_of("https://a.com/clip.mp4", false), Kind::File);
-        assert_eq!(kind_of("https://www.dailymotion.com/video/x8abc12", false), Kind::Embed);
+        assert_eq!(
+            kind_of("https://www.dailymotion.com/video/x8abc12", false),
+            Kind::Embed
+        );
         assert_eq!(kind_of("https://a.com/watch.m3u8", true), Kind::Page);
         assert!(Kind::Hls.named_by_page() && Kind::File.named_by_page());
         assert!(!Kind::Page.named_by_page() && !Kind::Embed.named_by_page());
@@ -244,12 +289,18 @@ mod tests {
         let e = d.on_message(&json!({"kind": "play"}).to_string());
         assert_eq!(printed(&e)[0]["kind"], "play");
         assert_eq!(shows(&e), 1);
-        assert!(d.on_message(&json!({"kind": "play"}).to_string()).is_empty());
+        assert!(
+            d.on_message(&json!({"kind": "play"}).to_string())
+                .is_empty()
+        );
         // A stream found first already announced itself: no extra line for the play.
         let mut d = Detector::default();
         d.on_message(&page("https://site.test/p", "T"));
         d.on_message(&msg("media", "https://a.com/v.m3u8"));
-        assert!(d.on_message(&json!({"kind": "play"}).to_string()).is_empty());
+        assert!(
+            d.on_message(&json!({"kind": "play"}).to_string())
+                .is_empty()
+        );
     }
 
     #[test]
@@ -257,13 +308,19 @@ mod tests {
         let mut d = Detector::default();
         d.on_message(&page("https://site.test/p", "T"));
         // What the browser's network layer reports when the request headers are unknown.
-        let e = d.on_message(&json!({"kind": "media", "url": "https://cdn.test/v.mp4", "size": 5_000_000}).to_string());
+        let e = d.on_message(
+            &json!({"kind": "media", "url": "https://cdn.test/v.mp4", "size": 5_000_000})
+                .to_string(),
+        );
         let l = &printed(&e)[0];
         assert_eq!(l["referer"], "https://site.test/p");
         assert_eq!(l["ua"], "UA");
         assert_eq!(l["size"], 5_000_000);
         let c = &d.ranked()[1];
-        assert_eq!((c.referer.as_deref(), c.ua.as_deref()), (Some("https://site.test/p"), Some("UA")));
+        assert_eq!(
+            (c.referer.as_deref(), c.ua.as_deref()),
+            (Some("https://site.test/p"), Some("UA"))
+        );
     }
 
     #[test]
@@ -275,7 +332,10 @@ mod tests {
         let early = json!({"kind": "media", "url": "https://a.com/next.m3u8", "referer": "https://site.test/2", "ua": "UA"}).to_string();
         d.on_message(&early);
         let e = d.on_message(&page("https://site.test/2", "Two"));
-        let kinds: Vec<String> = printed(&e).iter().map(|l| l["kind"].as_str().unwrap().to_string()).collect();
+        let kinds: Vec<String> = printed(&e)
+            .iter()
+            .map(|l| l["kind"].as_str().unwrap().to_string())
+            .collect();
         assert_eq!(kinds, ["page", "media"]);
         assert_eq!(shows(&e), 1);
         assert_eq!(urls(&d), ["https://site.test/2", "https://a.com/next.m3u8"]);
@@ -299,11 +359,17 @@ mod tests {
         d.on_message(&page("https://site.test/p", "T"));
         assert_eq!(shows(&d.on_message(&msg("play", "https://site.test/p"))), 1);
         assert_eq!(shows(&d.on_message(&msg("play", "https://site.test/p"))), 0);
-        assert_eq!(shows(&d.on_message(&msg("media", "https://a.com/v.mp4"))), 0);
+        assert_eq!(
+            shows(&d.on_message(&msg("media", "https://a.com/v.mp4"))),
+            0
+        );
 
         let mut d = Detector::default();
         d.on_message(&page("https://site.test/p", "T"));
-        assert_eq!(shows(&d.on_message(&msg("media", "https://a.com/v.m3u8"))), 1);
+        assert_eq!(
+            shows(&d.on_message(&msg("media", "https://a.com/v.m3u8"))),
+            1
+        );
     }
 
     #[test]
@@ -330,7 +396,10 @@ mod tests {
         d.on_message(&page("https://site.test/1", "One"));
         d.on_message(&msg("media", "https://a.com/old.mp4"));
         let e = d.on_message(&page("https://site.test/2", "Two"));
-        assert!(e.iter().any(|x| matches!(x, Effect::Eval(js) if *js == HIDE)));
+        assert!(
+            e.iter()
+                .any(|x| matches!(x, Effect::Eval(js) if *js == HIDE))
+        );
         assert_eq!(urls(&d), ["https://site.test/2"]);
         assert!(d.on_message(&page("https://site.test/2", "Two")).is_empty());
     }
@@ -343,10 +412,16 @@ mod tests {
         // The site sets its title late; later media get the new one.
         let e = d.on_message(&json!({"kind": "title", "title": "Lezione 3"}).to_string());
         assert_eq!(printed(&e)[0]["kind"], "title");
-        assert!(d.on_message(&json!({"kind": "title", "title": "Lezione 3"}).to_string()).is_empty());
+        assert!(
+            d.on_message(&json!({"kind": "title", "title": "Lezione 3"}).to_string())
+                .is_empty()
+        );
         let e = d.on_message(&msg("media", "https://a.com/v.m3u8"));
         let l = &printed(&e)[0];
-        assert_eq!((l["kind"].as_str(), l["title"].as_str()), (Some("media"), Some("Lezione 3")));
+        assert_eq!(
+            (l["kind"].as_str(), l["title"].as_str()),
+            (Some("media"), Some("Lezione 3"))
+        );
         let e = d.on_message(&json!({"kind": "download"}).to_string());
         assert_eq!(printed(&e)[0]["title"], "Lezione 3");
     }
@@ -356,7 +431,10 @@ mod tests {
         let mut d = Detector::default();
         d.on_message(&page("https://site.test/p", "T"));
         d.on_message(&msg("media", "https://a.com/v.mp4"));
-        assert!(d.on_message(&msg("media", "https://a.com/v.mp4#t=5")).is_empty());
+        assert!(
+            d.on_message(&msg("media", "https://a.com/v.mp4#t=5"))
+                .is_empty()
+        );
         assert_eq!(d.ranked().len(), 2);
     }
 
@@ -370,7 +448,9 @@ mod tests {
         d.on_message(&msg("media", "https://a.com/v1.mp4"));
         assert_eq!(d.ranked().len(), MAX_TRIES);
         let e = d.on_message(&json!({"kind": "download"}).to_string());
-        let Effect::Print(line) = &e[0] else { panic!("expected a line") };
+        let Effect::Print(line) = &e[0] else {
+            panic!("expected a line")
+        };
         let v: Value = serde_json::from_str(line).unwrap();
         assert_eq!(v["kind"], "download");
         assert_eq!(v["candidates"].as_array().unwrap().len(), MAX_TRIES);

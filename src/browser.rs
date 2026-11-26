@@ -11,18 +11,28 @@ const SCRIPT: &str = include_str!("detect.js");
 fn describe(
     args: Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2WebResourceResponseReceivedEventArgs>,
 ) -> Option<String> {
-    use crate::net::{is_media, total_size, Resp};
+    use crate::net::{Resp, is_media, total_size};
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2HttpRequestHeaders, ICoreWebView2HttpResponseHeaders,
+    };
     use webview2_com::take_pwstr;
-    use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2HttpRequestHeaders, ICoreWebView2HttpResponseHeaders};
-    use windows::core::{w, PCWSTR, PWSTR};
+    use windows::core::{PCWSTR, PWSTR, w};
 
     fn from_response(h: &ICoreWebView2HttpResponseHeaders, name: PCWSTR) -> String {
         let mut v = PWSTR::null();
-        if unsafe { h.GetHeader(name, &mut v) }.is_err() || v.is_null() { String::new() } else { take_pwstr(v) }
+        if unsafe { h.GetHeader(name, &mut v) }.is_err() || v.is_null() {
+            String::new()
+        } else {
+            take_pwstr(v)
+        }
     }
     fn from_request(h: &ICoreWebView2HttpRequestHeaders, name: PCWSTR) -> String {
         let mut v = PWSTR::null();
-        if unsafe { h.GetHeader(name, &mut v) }.is_err() || v.is_null() { String::new() } else { take_pwstr(v) }
+        if unsafe { h.GetHeader(name, &mut v) }.is_err() || v.is_null() {
+            String::new()
+        } else {
+            take_pwstr(v)
+        }
     }
 
     let args = args?;
@@ -39,14 +49,29 @@ fn describe(
     let h = unsafe { resp.Headers() }.ok()?;
     let content_type = from_response(&h, w!("Content-Type"));
     let content_range = from_response(&h, w!("Content-Range"));
-    let content_length = from_response(&h, w!("Content-Length")).trim().parse::<u64>().ok();
-    let r = Resp { url: &url, status, content_type: &content_type, content_length, content_range: &content_range };
+    let content_length = from_response(&h, w!("Content-Length"))
+        .trim()
+        .parse::<u64>()
+        .ok();
+    let r = Resp {
+        url: &url,
+        status,
+        content_type: &content_type,
+        content_length,
+        content_range: &content_range,
+    };
     if !is_media(&r) {
         return None;
     }
     let rh = unsafe { req.Headers() }.ok();
-    let referer = rh.as_ref().map(|h| from_request(h, w!("Referer"))).unwrap_or_default();
-    let ua = rh.as_ref().map(|h| from_request(h, w!("User-Agent"))).unwrap_or_default();
+    let referer = rh
+        .as_ref()
+        .map(|h| from_request(h, w!("Referer")))
+        .unwrap_or_default();
+    let ua = rh
+        .as_ref()
+        .map(|h| from_request(h, w!("User-Agent")))
+        .unwrap_or_default();
     Some(serde_json::json!({"kind": "media", "url": url, "referer": referer, "ua": ua, "size": total_size(&r)}).to_string())
 }
 
@@ -58,7 +83,9 @@ fn listen_to_network(view: &wry::WebView, proxy: tao::event_loop::EventLoopProxy
     use windows::core::Interface;
     use wry::WebViewExtWindows;
 
-    let Ok(wv) = view.webview().cast::<ICoreWebView2_2>() else { return };
+    let Ok(wv) = view.webview().cast::<ICoreWebView2_2>() else {
+        return;
+    };
     let mut token = 0i64;
     let handler = WebResourceResponseReceivedEventHandler::create(Box::new(move |_, args| {
         if let Some(line) = describe(args) {
@@ -112,7 +139,10 @@ pub fn run(url: String) {
                     }
                 }
             }
-            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => *flow = ControlFlow::Exit,
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } => *flow = ControlFlow::Exit,
             _ => {}
         }
     });

@@ -41,7 +41,11 @@ pub struct Opts {
 
 impl Opts {
     pub fn from_settings(s: &Settings) -> Opts {
-        Opts { audio: s.audio_only, container: s.container, height: s.quality.height() }
+        Opts {
+            audio: s.audio_only,
+            container: s.container,
+            height: s.quality.height(),
+        }
     }
 }
 
@@ -123,14 +127,26 @@ impl Job {
     }
     /// An address yt-dlp has not read yet.
     pub fn pending(c: Cand, opts: Opts, dir: PathBuf, batch: u64) -> Job {
-        Job { state: State::Fetching, batch, ..Job::new(c, opts, dir, vec![]) }
+        Job {
+            state: State::Fetching,
+            batch,
+            ..Job::new(c, opts, dir, vec![])
+        }
     }
     pub fn cand(&self) -> Cand {
-        Cand { url: self.url.clone(), referer: self.referer.clone(), ua: self.ua.clone(), title: self.title.clone() }
+        Cand {
+            url: self.url.clone(),
+            referer: self.referer.clone(),
+            ua: self.ua.clone(),
+            title: self.title.clone(),
+        }
     }
     /// Name shown in lists: the page title when known, else the address.
     pub fn label(&self) -> String {
-        self.shown.clone().or_else(|| self.title.clone()).unwrap_or_else(|| self.url.clone())
+        self.shown
+            .clone()
+            .or_else(|| self.title.clone())
+            .unwrap_or_else(|| self.url.clone())
     }
 }
 
@@ -139,11 +155,15 @@ fn kill_tree(pid: u32) {
     #[cfg(windows)]
     {
         let mut c = Command::new("taskkill");
-        let _ = quiet(&mut c).args(["/PID", &pid.to_string(), "/T", "/F"]).output();
+        let _ = quiet(&mut c)
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output();
     }
     #[cfg(not(windows))]
     {
-        let _ = Command::new("kill").args(["-KILL", &pid.to_string()]).output();
+        let _ = Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .output();
     }
 }
 
@@ -168,13 +188,26 @@ pub fn valid_url(s: &str) -> Option<String> {
 
 /// A page title made safe to use as a file name, or None when nothing usable is left.
 pub fn sanitize_title(t: &str) -> Option<String> {
-    let cleaned: String = t.chars().map(|c| if "<>:\"/\\|?*".contains(c) || c.is_control() { ' ' } else { c }).collect();
+    let cleaned: String = t
+        .chars()
+        .map(|c| {
+            if "<>:\"/\\|?*".contains(c) || c.is_control() {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
     let joined = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     let s: String = joined.chars().take(120).collect();
-    let s = s.trim_matches(|c: char| c == '.' || c.is_whitespace()).to_string();
+    let s = s
+        .trim_matches(|c: char| c == '.' || c.is_whitespace())
+        .to_string();
     let stem = s.split('.').next().unwrap_or("").to_uppercase();
     let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str())
-        || ((stem.starts_with("COM") || stem.starts_with("LPT")) && stem.len() == 4 && stem[3..].chars().all(|c| c.is_ascii_digit()));
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && stem[3..].chars().all(|c| c.is_ascii_digit()));
     (!s.is_empty() && !reserved).then_some(s)
 }
 
@@ -200,7 +233,11 @@ pub fn claim_stem(dir: &Path, stem: &str, ext: &str) -> (String, Claim) {
     let mut held = claimed();
     let mut n = 0;
     loop {
-        let s = if n == 0 { stem.to_string() } else { format!("{stem} ({n})") };
+        let s = if n == 0 {
+            stem.to_string()
+        } else {
+            format!("{stem} ({n})")
+        };
         let path = dir.join(format!("{s}.{ext}"));
         if !path.exists() && !held.contains(&path) {
             held.push(path.clone());
@@ -238,7 +275,11 @@ pub fn args(job: &Job, ffmpeg_dir: &Path) -> (Vec<String>, Option<Claim>) {
     .into();
     a.push(ffmpeg_dir.to_string_lossy().into());
 
-    let ext = if job.opts.audio { "mp3" } else { job.opts.container.ext() };
+    let ext = if job.opts.audio {
+        "mp3"
+    } else {
+        job.opts.container.ext()
+    };
     let (name, claim) = match job.title.as_deref().and_then(sanitize_title) {
         // The title is literal text, so a percent sign must not be read as a template field.
         Some(t) => {
@@ -250,7 +291,12 @@ pub fn args(job: &Job, ffmpeg_dir: &Path) -> (Vec<String>, Option<Claim>) {
     // The whole -o value is a template: a percent sign in the folder name needs the same care.
     let dir = job.dir.to_string_lossy().replace('%', "%%");
     a.push("-o".into());
-    a.push(PathBuf::from(dir).join(format!("{name}.%(ext)s")).to_string_lossy().into());
+    a.push(
+        PathBuf::from(dir)
+            .join(format!("{name}.%(ext)s"))
+            .to_string_lossy()
+            .into(),
+    );
 
     if job.opts.audio {
         a.extend(["-x", "--audio-format", "mp3", "--audio-quality", "0"].map(String::from));
@@ -258,11 +304,23 @@ pub fn args(job: &Job, ffmpeg_dir: &Path) -> (Vec<String>, Option<Claim>) {
         a.push("-f".into());
         a.push(video_selector(job.opts.height));
         match job.opts.container {
-            Container::Mp4 => {
-                a.extend(["-S", "res,vcodec:h264,acodec:aac", "--merge-output-format", "mp4", "--remux-video", "mp4"].map(String::from))
+            Container::Mp4 => a.extend(
+                [
+                    "-S",
+                    "res,vcodec:h264,acodec:aac",
+                    "--merge-output-format",
+                    "mp4",
+                    "--remux-video",
+                    "mp4",
+                ]
+                .map(String::from),
+            ),
+            Container::Mkv => {
+                a.extend(["--merge-output-format", "mkv", "--remux-video", "mkv"].map(String::from))
             }
-            Container::Mkv => a.extend(["--merge-output-format", "mkv", "--remux-video", "mkv"].map(String::from)),
-            Container::Webm => a.extend(["--merge-output-format", "mkv", "--recode-video", "webm"].map(String::from)),
+            Container::Webm => a.extend(
+                ["--merge-output-format", "mkv", "--recode-video", "webm"].map(String::from),
+            ),
         }
     }
     if let Some(r) = &job.referer {
@@ -276,7 +334,12 @@ pub fn args(job: &Job, ffmpeg_dir: &Path) -> (Vec<String>, Option<Claim>) {
 }
 
 /// Runs yt-dlp to completion, reporting percent progress. Ok carries the final file when yt-dlp printed it.
-pub fn run(yt: &Path, job: &Job, ffmpeg_dir: &Path, mut progress: impl FnMut(f32)) -> Result<Option<PathBuf>, String> {
+pub fn run(
+    yt: &Path,
+    job: &Job,
+    ffmpeg_dir: &Path,
+    mut progress: impl FnMut(f32),
+) -> Result<Option<PathBuf>, String> {
     if job.ctl.is_cancelled() {
         return Err("Cancelled".into());
     }
@@ -287,7 +350,9 @@ pub fn run(yt: &Path, job: &Job, ffmpeg_dir: &Path, mut progress: impl FnMut(f32
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| format!("cannot start yt-dlp: {e}"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("cannot start yt-dlp: {e}"))?;
     job.ctl.pid.store(child.id(), Ordering::SeqCst);
     if job.ctl.is_cancelled() {
         kill_tree(child.id()); // cancelled between the check and the spawn
@@ -308,8 +373,14 @@ pub fn run(yt: &Path, job: &Job, ffmpeg_dir: &Path, mut progress: impl FnMut(f32
         }
     });
     let mut out: Option<PathBuf> = None;
-    for line in BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
-        if let Some(p) = line.strip_prefix("PCT ").and_then(|p| p.trim().trim_end_matches('%').parse::<f32>().ok()) {
+    for line in BufReader::new(child.stdout.take().unwrap())
+        .lines()
+        .map_while(Result::ok)
+    {
+        if let Some(p) = line
+            .strip_prefix("PCT ")
+            .and_then(|p| p.trim().trim_end_matches('%').parse::<f32>().ok())
+        {
             progress(p);
         } else if let Some(f) = line.strip_prefix("FILE ") {
             out = Some(PathBuf::from(f.trim()));
@@ -326,7 +397,9 @@ pub fn run(yt: &Path, job: &Job, ffmpeg_dir: &Path, mut progress: impl FnMut(f32
         return Ok(out);
     }
     if drm.load(Ordering::SeqCst) {
-        return Err("This video seems to be protected by DRM, which Camallo cannot download".into());
+        return Err(
+            "This video seems to be protected by DRM, which Camallo cannot download".into(),
+        );
     }
     let e = last_err.lock().unwrap().clone();
     let e = e.trim_start_matches("ERROR:").trim();
@@ -338,20 +411,36 @@ pub fn run(yt: &Path, job: &Job, ffmpeg_dir: &Path, mut progress: impl FnMut(f32
 }
 
 /// Tries the job's address, then each alternative, until one works.
-pub fn run_chain(yt: &Path, job: &Job, ffmpeg_dir: &Path, mut progress: impl FnMut(f32)) -> Result<Option<PathBuf>, String> {
+pub fn run_chain(
+    yt: &Path,
+    job: &Job,
+    ffmpeg_dir: &Path,
+    mut progress: impl FnMut(f32),
+) -> Result<Option<PathBuf>, String> {
     let mut tries = vec![job.cand()];
     tries.extend(job.alts.iter().cloned());
     let n = tries.len();
     let mut last = String::new();
     for c in tries {
-        let j = Job { url: c.url, referer: c.referer, ua: c.ua, title: c.title, alts: vec![], ..job.clone() };
+        let j = Job {
+            url: c.url,
+            referer: c.referer,
+            ua: c.ua,
+            title: c.title,
+            alts: vec![],
+            ..job.clone()
+        };
         match run(yt, &j, ffmpeg_dir, &mut progress) {
             Ok(p) => return Ok(p),
             Err(e) if job.ctl.is_cancelled() => return Err(e),
             Err(e) => last = e,
         }
     }
-    Err(if n > 1 { format!("tried {n} ways, last error: {last}") } else { last })
+    Err(if n > 1 {
+        format!("tried {n} ways, last error: {last}")
+    } else {
+        last
+    })
 }
 
 #[cfg(test)]
@@ -359,13 +448,27 @@ mod tests {
     use super::*;
 
     fn cand(u: &str) -> Cand {
-        Cand { url: u.into(), referer: None, ua: None, title: None }
+        Cand {
+            url: u.into(),
+            referer: None,
+            ua: None,
+            title: None,
+        }
     }
     fn opts() -> Opts {
-        Opts { audio: false, container: Container::Mp4, height: None }
+        Opts {
+            audio: false,
+            container: Container::Mp4,
+            height: None,
+        }
     }
     fn job(o: Opts) -> Job {
-        Job::new(cand("https://example.com/v"), o, PathBuf::from("out"), vec![])
+        Job::new(
+            cand("https://example.com/v"),
+            o,
+            PathBuf::from("out"),
+            vec![],
+        )
     }
     fn argv(j: &Job, ffmpeg_dir: &Path) -> Vec<String> {
         args(j, ffmpeg_dir).0
@@ -385,14 +488,20 @@ mod tests {
 
     #[test]
     fn titles_become_safe_file_names() {
-        assert_eq!(sanitize_title("  Lezione 1: Sociologia / media?  ").as_deref(), Some("Lezione 1 Sociologia media"));
+        assert_eq!(
+            sanitize_title("  Lezione 1: Sociologia / media?  ").as_deref(),
+            Some("Lezione 1 Sociologia media")
+        );
         assert_eq!(sanitize_title("a\nb\t c").as_deref(), Some("a b c"));
         assert_eq!(sanitize_title("..."), None);
         assert_eq!(sanitize_title("   "), None);
         assert_eq!(sanitize_title("NUL"), None);
         assert_eq!(sanitize_title("com1.mp4"), None);
         assert_eq!(sanitize_title("console").as_deref(), Some("console"));
-        assert_eq!(sanitize_title(&"x".repeat(300)).unwrap().chars().count(), 120);
+        assert_eq!(
+            sanitize_title(&"x".repeat(300)).unwrap().chars().count(),
+            120
+        );
     }
 
     #[test]
@@ -424,7 +533,11 @@ mod tests {
         let (first, c1) = args(&j, &f);
         let (second, c2) = args(&j, &f);
         assert!(out(&first).ends_with("Lesson 3.%(ext)s"), "{}", out(&first));
-        assert!(out(&second).ends_with("Lesson 3 (1).%(ext)s"), "{}", out(&second));
+        assert!(
+            out(&second).ends_with("Lesson 3 (1).%(ext)s"),
+            "{}",
+            out(&second)
+        );
         // A name given back (failed or cancelled download) can be used again.
         drop(c2);
         let (third, _c3) = args(&j, &f);
@@ -438,7 +551,10 @@ mod tests {
         j.dir = PathBuf::from("out").join("a%(title)s");
         let v = argv(&j, &PathBuf::from("b"));
         let o = v[v.iter().position(|a| a == "-o").unwrap() + 1].clone();
-        assert!(o.contains("a%%(title)s") && o.ends_with("%(title).150B.%(ext)s"), "{o}");
+        assert!(
+            o.contains("a%%(title)s") && o.ends_with("%(title).150B.%(ext)s"),
+            "{o}"
+        );
     }
 
     #[test]
@@ -461,13 +577,37 @@ mod tests {
         assert!(has(&v, ["--remux-video", "mp4"]) && !v.contains(&"-x".to_string()));
         assert!(has(&v, ["--print", "after_move:FILE %(filepath)s"]));
 
-        let v = argv(&job(Opts { container: Container::Mkv, ..opts() }), &f);
+        let v = argv(
+            &job(Opts {
+                container: Container::Mkv,
+                ..opts()
+            }),
+            &f,
+        );
         assert!(has(&v, ["--remux-video", "mkv"]));
-        let v = argv(&job(Opts { container: Container::Webm, ..opts() }), &f);
+        let v = argv(
+            &job(Opts {
+                container: Container::Webm,
+                ..opts()
+            }),
+            &f,
+        );
         assert!(has(&v, ["--recode-video", "webm"]));
-        let v = argv(&job(Opts { audio: true, ..opts() }), &f);
+        let v = argv(
+            &job(Opts {
+                audio: true,
+                ..opts()
+            }),
+            &f,
+        );
         assert!(v.contains(&"-x".to_string()) && !v.contains(&"-f".to_string()));
-        let v = argv(&job(Opts { height: Some(480), ..opts() }), &f);
+        let v = argv(
+            &job(Opts {
+                height: Some(480),
+                ..opts()
+            }),
+            &f,
+        );
         assert!(has(&v, ["-f", &video_selector(Some(480))]));
     }
 
@@ -476,12 +616,20 @@ mod tests {
         let mut j = job(opts());
         j.title = Some("Sconto 50% / offerta".into());
         let v = argv(&j, &PathBuf::from("b"));
-        let o = v.iter().position(|a| a == "-o").map(|i| v[i + 1].clone()).unwrap();
+        let o = v
+            .iter()
+            .position(|a| a == "-o")
+            .map(|i| v[i + 1].clone())
+            .unwrap();
         assert!(o.ends_with("Sconto 50%% offerta.%(ext)s"), "{o}");
         // Without a usable title yt-dlp names the file.
         j.title = Some("???".into());
         let v = argv(&j, &PathBuf::from("b"));
-        let o = v.iter().position(|a| a == "-o").map(|i| v[i + 1].clone()).unwrap();
+        let o = v
+            .iter()
+            .position(|a| a == "-o")
+            .map(|i| v[i + 1].clone())
+            .unwrap();
         assert!(o.ends_with("%(title).150B.%(ext)s"), "{o}");
     }
 
@@ -532,7 +680,10 @@ mod tests {
     #[test]
     fn drm_gets_its_own_message() {
         let dir = std::env::temp_dir().join(format!("camallo-drm-{}", std::process::id()));
-        let fake = fake_yt(&dir, "#!/bin/sh\necho 'ERROR: [x] This video is DRM protected' >&2\nexit 1\n");
+        let fake = fake_yt(
+            &dir,
+            "#!/bin/sh\necho 'ERROR: [x] This video is DRM protected' >&2\nexit 1\n",
+        );
         let e = run(&fake, &job(opts()), &dir, |_| {}).unwrap_err();
         assert!(e.contains("DRM") && e.contains("cannot download"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -554,7 +705,10 @@ mod tests {
         ctl.cancel();
         let r = h.join().unwrap();
         assert_eq!(r, Err("Cancelled".to_string()));
-        assert!(started.elapsed().as_secs() < 10, "cancel should not wait for the process");
+        assert!(
+            started.elapsed().as_secs() < 10,
+            "cancel should not wait for the process"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -566,7 +720,11 @@ mod real {
     use super::*;
 
     fn opts() -> Opts {
-        Opts { audio: false, container: Container::Mp4, height: None }
+        Opts {
+            audio: false,
+            container: Container::Mp4,
+            height: None,
+        }
     }
 
     fn env() -> Option<(PathBuf, PathBuf, String)> {
@@ -585,16 +743,34 @@ mod real {
     }
 
     fn job_for(url: String, title: Option<&str>, o: Opts, dir: &Path) -> Job {
-        let c = Cand { url, referer: None, ua: Some("CamalloTest/1".into()), title: title.map(String::from) };
+        let c = Cand {
+            url,
+            referer: None,
+            ua: Some("CamalloTest/1".into()),
+            title: title.map(String::from),
+        };
         Job::new(c, o, dir.to_path_buf(), vec![])
     }
 
     /// Picture size as ffmpeg reports it.
     fn size_of(ff: &Path, f: &Path) -> String {
-        let o = Command::new(ff.join("ffmpeg")).arg("-i").arg(f).output().unwrap();
+        let o = Command::new(ff.join("ffmpeg"))
+            .arg("-i")
+            .arg(f)
+            .output()
+            .unwrap();
         let t = String::from_utf8_lossy(&o.stderr).into_owned();
-        let l = t.lines().find(|l| l.contains("Video:")).unwrap_or("").to_string();
-        l.split(|c: char| c == ' ' || c == ',').find(|w| w.len() > 3 && w.contains('x') && w.chars().all(|c| c.is_ascii_digit() || c == 'x')).unwrap_or("").to_string()
+        let l = t
+            .lines()
+            .find(|l| l.contains("Video:"))
+            .unwrap_or("")
+            .to_string();
+        l.split(|c: char| c == ' ' || c == ',')
+            .find(|w| {
+                w.len() > 3 && w.contains('x') && w.chars().all(|c| c.is_ascii_digit() || c == 'x')
+            })
+            .unwrap_or("")
+            .to_string()
     }
 
     #[test]
@@ -602,9 +778,16 @@ mod real {
     fn real_file_named_by_title_and_never_overwritten() {
         let Some((yt, ff, base)) = env() else { return };
         let dir = fresh("file");
-        let j = job_for(format!("{base}/clip.mp4"), Some("Lezione 1: prova 50%"), opts(), &dir);
+        let j = job_for(
+            format!("{base}/clip.mp4"),
+            Some("Lezione 1: prova 50%"),
+            opts(),
+            &dir,
+        );
         let mut last = 0.0;
-        let a = run_chain(&yt, &j, &ff, |p| last = p).unwrap().expect("path reported");
+        let a = run_chain(&yt, &j, &ff, |p| last = p)
+            .unwrap()
+            .expect("path reported");
         assert!(a.ends_with("Lezione 1 prova 50%.mp4"), "{a:?}");
         assert!(a.metadata().unwrap().len() > 1000);
         assert!(last > 0.0);
@@ -619,16 +802,48 @@ mod real {
         let Some((yt, ff, base)) = env() else { return };
         let dir = fresh("hls");
         let url = format!("{base}/hls/master.m3u8");
-        let best = run_chain(&yt, &job_for(url.clone(), Some("best"), opts(), &dir), &ff, |_| {}).unwrap().unwrap();
+        let best = run_chain(
+            &yt,
+            &job_for(url.clone(), Some("best"), opts(), &dir),
+            &ff,
+            |_| {},
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(size_of(&ff, &best), "640x360");
-        let low = Opts { height: Some(200), ..opts() };
-        let low = run_chain(&yt, &job_for(url.clone(), Some("low"), low, &dir), &ff, |_| {}).unwrap().unwrap();
+        let low = Opts {
+            height: Some(200),
+            ..opts()
+        };
+        let low = run_chain(
+            &yt,
+            &job_for(url.clone(), Some("low"), low, &dir),
+            &ff,
+            |_| {},
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(size_of(&ff, &low), "320x180");
-        let mkv = Opts { container: Container::Mkv, ..opts() };
-        let mkv = run_chain(&yt, &job_for(url.clone(), Some("mkv"), mkv, &dir), &ff, |_| {}).unwrap().unwrap();
+        let mkv = Opts {
+            container: Container::Mkv,
+            ..opts()
+        };
+        let mkv = run_chain(
+            &yt,
+            &job_for(url.clone(), Some("mkv"), mkv, &dir),
+            &ff,
+            |_| {},
+        )
+        .unwrap()
+        .unwrap();
         assert!(mkv.extension().unwrap() == "mkv" && mkv.exists(), "{mkv:?}");
-        let au = Opts { audio: true, ..opts() };
-        let au = run_chain(&yt, &job_for(url, Some("sound"), au, &dir), &ff, |_| {}).unwrap().unwrap();
+        let au = Opts {
+            audio: true,
+            ..opts()
+        };
+        let au = run_chain(&yt, &job_for(url, Some("sound"), au, &dir), &ff, |_| {})
+            .unwrap()
+            .unwrap();
         assert!(au.extension().unwrap() == "mp3" && au.exists(), "{au:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -638,7 +853,13 @@ mod real {
     fn real_failure_has_a_short_reason() {
         let Some((yt, ff, base)) = env() else { return };
         let dir = fresh("fail");
-        let e = run_chain(&yt, &job_for(format!("{base}/missing.mp4"), None, opts(), &dir), &ff, |_| {}).unwrap_err();
+        let e = run_chain(
+            &yt,
+            &job_for(format!("{base}/missing.mp4"), None, opts(), &dir),
+            &ff,
+            |_| {},
+        )
+        .unwrap_err();
         assert!(!e.is_empty() && e.chars().count() <= 160, "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -647,7 +868,12 @@ mod real {
     #[ignore]
     fn real_probe_lists_heights() {
         let Some((yt, _ff, base)) = env() else { return };
-        let c = Cand { url: format!("{base}/hls/master.m3u8"), referer: None, ua: None, title: None };
+        let c = Cand {
+            url: format!("{base}/hls/master.m3u8"),
+            referer: None,
+            ua: None,
+            title: None,
+        };
         let i = crate::probe::probe(&yt, &c).unwrap();
         let h: Vec<u32> = i.qualities.iter().map(|q| q.height).collect();
         assert_eq!(h, [360, 180], "{i:?}");

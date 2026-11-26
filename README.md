@@ -33,7 +33,7 @@ It is written in Rust, ships as a single executable and keeps its own copies of 
 - **Formats.** MP4, MKV or WebM for video, MP3 for audio only. Quality cap of Highest, 1080p, 720p or 480p, chosen per video or for all of them at once.
 - **A real queue.** One to four downloads in parallel, progress ring per card, Cancel, Retry, Open and Show in folder, plus a history of finished downloads.
 - **Safe file names.** Files never overwrite each other: a clash becomes `name (1)`, `name (2)` and so on. Titles are cleaned so that Windows accepts them as file names.
-- **Self-maintaining.** On first run Camallo downloads yt-dlp and ffmpeg and checks their SHA-256 checksums. Later runs let yt-dlp update itself.
+- **Self-maintaining.** On first run Camallo downloads yt-dlp and ffmpeg and checks their SHA-256 checksums. Later runs look for a newer yt-dlp before the first video is read (waiting at most eight seconds on a slow connection), and the window says which version it is and whether it was updated.
 - **A custom window.** Dark theme with a single purple accent and a black title bar drawn by the app. Layout inspired by [youtube-dl-gui](https://github.com/jely2002/youtube-dl-gui).
 
 ## Install
@@ -94,6 +94,8 @@ Open them with the gear icon. They are saved between runs.
 | Download folder | any folder | `Videos\Camallo` |
 | Sub-folder | optional single folder name inside the download folder, for example one per site or project | empty |
 | Start at once | download each video as soon as yt-dlp has read it, without waiting for Download | off |
+
+The settings panel also shows, as plain text, the version of yt-dlp in use and how the last look for an update ended; the same line sits at the bottom of the window when nothing is downloading.
 
 MP4 prefers H.264 video with AAC audio, so the files play almost everywhere. MKV keeps whatever the site provides. WebM is re-encoded by ffmpeg when needed.
 
