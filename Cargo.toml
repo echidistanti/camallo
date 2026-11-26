@@ -1,6 +1,6 @@
 [package]
 name = "camallo"
-version = "0.6.2"
+version = "0.6.3"
 edition = "2024"
 description = "Windows video downloader: paste a link or let the built-in browser find the video. yt-dlp and ffmpeg do the work."
 license = "MIT"
