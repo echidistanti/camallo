@@ -1,0 +1,36 @@
+name: CI
+
+# Every push builds camallo.exe the way a release does, runs the tests and checks the formatting. The exe is
+# kept for a week as an artifact, to try it before a release is made.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test
+        run: cargo test --locked
+      - name: Build
+        run: cargo build --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: camallo-windows-x64
+          path: target/release/camallo.exe
+          retention-days: 7
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check

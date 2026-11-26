@@ -149,7 +149,7 @@ node tests/detect_test.js                    # tests for the injected page scrip
 cargo build --release --target x86_64-pc-windows-gnu
 ```
 
-The published executables are cross-compiled from Linux with the `x86_64-pc-windows-gnu` target and `mingw-w64`. Other toolchains have not been tried.
+Up to 0.6.2 the published executables were cross-compiled from Linux with the `x86_64-pc-windows-gnu` target and `mingw-w64`. From 0.6.3 GitHub builds them on Windows with the MSVC toolchain (see [Releases and the installer](#releases-and-the-installer)); the cross-compile above still works.
 
 The icon is embedded by `build.rs`, which needs `windres` (the `mingw-w64` package) when cross-compiling. Without it the build still succeeds, with a warning, and the executable has no icon.
 
@@ -178,7 +178,7 @@ Each line of the file is one JSON message such as the injected script would send
 
 ## Releases and the installer
 
-Releases are published on GitHub with the portable `.7z` attached. When a release is published, the workflow in [`.github/workflows/installer.yml`](.github/workflows/installer.yml) downloads that archive, builds the Windows installer with [Inno Setup](https://jrsoftware.org/isinfo.php) from [`installer/camallo.iss`](installer/camallo.iss), and uploads `camallo-<version>-windows-x64-setup.exe` to the same release.
+Publishing a release on GitHub is all it takes. The workflow in [`.github/workflows/release.yml`](.github/workflows/release.yml) builds `camallo.exe` from the tag, attaches the portable `camallo-<version>-windows-x64.7z`, and then calls [`.github/workflows/installer.yml`](.github/workflows/installer.yml), which builds the Windows installer with [Inno Setup](https://jrsoftware.org/isinfo.php) from [`installer/camallo.iss`](installer/camallo.iss) and uploads `camallo-<version>-windows-x64-setup.exe` to the same release. Every push to `main` also runs the tests and builds the exe ([`ci.yml`](.github/workflows/ci.yml)), kept for a week as an artifact.
 
 To build the installer by hand, put `camallo.exe` in a folder, then run:
 
@@ -186,7 +186,7 @@ To build the installer by hand, put `camallo.exe` in a folder, then run:
 ISCC /DMyAppVersion=0.6.0 /DSourceDir=C:\path\to\folder installer\camallo.iss
 ```
 
-The result lands in `installer\output\`. To rebuild it for an existing release, run the *Installer* workflow from the Actions tab and give it the tag.
+The result lands in `installer\output\`. To rebuild the files of an existing release, run the *Release* workflow (everything) or the *Installer* workflow (only the setup) from the Actions tab and give it the tag.
 
 ## Repository layout
 
@@ -211,7 +211,7 @@ vendor/          webview2-com-sys with the loader carried inside the program
 installer/       Inno Setup script
 assets/          the icon: icon.svg is the source, icon.ico goes into the executable, the PNGs into the windows
 build.rs         embeds the icon in the Windows executable
-.github/         workflow that builds the installer
+.github/         workflows: tests and build, release, installer
 ```
 
 ## Responsible use
