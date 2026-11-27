@@ -76,6 +76,13 @@ pub fn total_size(r: &Resp) -> Option<u64> {
     r.content_length
 }
 
+/// The line the detector expects for a response that fetched media: the address, the headers the request
+/// carried (a download needs the same ones) and the total size when it is known.
+pub fn media_json(r: &Resp, referer: &str, ua: &str) -> String {
+    serde_json::json!({"kind": "media", "url": r.url, "referer": referer, "ua": ua, "size": total_size(r)})
+        .to_string()
+}
+
 pub fn is_media(r: &Resp) -> bool {
     if !(r.status == 200 || r.status == 206) {
         return false;
@@ -120,6 +127,22 @@ mod tests {
             content_length: len,
             content_range: "",
         }
+    }
+
+    #[test]
+    fn the_line_for_the_detector_carries_address_headers_and_size() {
+        let mut resp = r("https://a.com/v.mp4", "video/mp4", Some(10));
+        resp.content_range = "bytes 0-9/5000000";
+        let v: serde_json::Value =
+            serde_json::from_str(&media_json(&resp, "https://a.com/page", "UA/1")).unwrap();
+        assert_eq!(v["kind"], "media");
+        assert_eq!(v["url"], "https://a.com/v.mp4");
+        assert_eq!(v["referer"], "https://a.com/page");
+        assert_eq!(v["ua"], "UA/1");
+        assert_eq!(
+            v["size"], 5_000_000,
+            "the total from Content-Range, not the slice"
+        );
     }
 
     #[test]

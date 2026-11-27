@@ -21,14 +21,7 @@ pub enum State {
     Cancelled,
 }
 
-/// One way to fetch a video: an address, the headers the page used and, for plain streams, a file name.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Cand {
-    pub url: String,
-    pub referer: Option<String>,
-    pub ua: Option<String>,
-    pub title: Option<String>,
-}
+pub use crate::cand::Cand;
 
 /// What to produce from the address.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -150,7 +143,8 @@ impl Job {
     }
 }
 
-/// Stops a process and everything it started (yt-dlp.exe spawns the real interpreter and ffmpeg).
+/// Stops a process and everything it started (yt-dlp spawns the real interpreter and ffmpeg). On Linux the
+/// process leads a group of its own (see `own_group`), and the whole group is stopped.
 fn kill_tree(pid: u32) {
     #[cfg(windows)]
     {
@@ -159,12 +153,25 @@ fn kill_tree(pid: u32) {
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .output();
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
-        let _ = Command::new("kill")
-            .args(["-KILL", &pid.to_string()])
-            .output();
+        let pid = pid as i32;
+        // SAFETY: kill(2) takes two integers and touches no memory of ours. A negative number names a process group.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+            libc::kill(pid, libc::SIGKILL);
+        }
     }
+}
+
+/// Makes the process the leader of a group of its own, so `kill_tree` reaches its children as well.
+pub fn own_group(c: &mut Command) -> &mut Command {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        c.process_group(0);
+    }
+    c
 }
 
 /// Hide the console window that Windows opens for child processes.
@@ -345,7 +352,7 @@ pub fn run(
     }
     let (argv, _claim) = args(job, ffmpeg_dir); // the name stays held until this function returns
     let mut cmd = Command::new(yt);
-    quiet(&mut cmd)
+    own_group(quiet(&mut cmd))
         .args(argv)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -709,6 +716,65 @@ mod tests {
             started.elapsed().as_secs() < 10,
             "cancel should not wait for the process"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// yt-dlp starts other programs (ffmpeg, the interpreter); cancelling must stop them too, not only the
+    /// process Camallo started.
+    #[cfg(unix)]
+    #[test]
+    fn cancel_stops_the_children_too() {
+        let dir = std::env::temp_dir().join(format!("camallo-tree-{}", std::process::id()));
+        let pidfile = dir.join("child.pid");
+        let fake = fake_yt(
+            &dir,
+            &format!(
+                "#!/bin/sh\nsleep 30 &\necho $! > '{}'\necho 'PCT 10.0%'\nwait\n",
+                pidfile.display()
+            ),
+        );
+        let j = job(opts());
+        let ctl = j.ctl.clone();
+        let h = std::thread::spawn({
+            let (fake, dir, j) = (fake.clone(), dir.clone(), j.clone());
+            move || run_chain(&fake, &j, &dir, |_| {})
+        });
+        let mut child = 0i32;
+        for _ in 0..50 {
+            let said = std::fs::read_to_string(&pidfile).ok();
+            if let Some(p) = said.and_then(|t| t.trim().parse().ok()) {
+                child = p;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(child > 0, "the stand-in never started its child");
+        assert_eq!(
+            unsafe { libc::kill(child, 0) },
+            0,
+            "the child should be running"
+        );
+        let cancelled = std::time::Instant::now();
+        ctl.cancel();
+        assert_eq!(h.join().unwrap(), Err("Cancelled".to_string()));
+        // A child left running keeps the output pipe open, so the download would not return until it ended.
+        assert!(
+            cancelled.elapsed().as_secs() < 10,
+            "cancel waited for the child"
+        );
+        // The kill is delivered at once; give the system a moment to reap the process.
+        let mut alive = true;
+        for _ in 0..50 {
+            alive = unsafe { libc::kill(child, 0) } == 0
+                && !std::fs::read_to_string(format!("/proc/{child}/stat"))
+                    .map(|s| s.contains(") Z "))
+                    .unwrap_or(true);
+            if !alive {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(!alive, "the child outlived the cancel");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

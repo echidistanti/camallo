@@ -1,7 +1,7 @@
 // Decides what the built-in browser does with the messages the injected script sends:
 // when to show the Download button, what to tell the main window, and in which order the
 // candidate addresses are tried.
-use crate::job::Cand;
+use crate::cand::Cand;
 use serde_json::{Value, json};
 
 pub const SHOW: &str = "window.__camallo&&window.__camallo.show()";

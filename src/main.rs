@@ -2,10 +2,13 @@
 
 mod app;
 mod browser;
+mod cand;
 mod deps;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod detector;
 mod fetch;
+#[cfg(not(windows))]
+mod filemanager;
 mod icon;
 mod job;
 #[cfg_attr(not(windows), allow(dead_code))]

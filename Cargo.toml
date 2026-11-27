@@ -1,8 +1,8 @@
 [package]
 name = "camallo"
-version = "0.6.3"
+version = "0.7.0"
 edition = "2024"
-description = "Windows video downloader: paste a link or let the built-in browser find the video. yt-dlp and ffmpeg do the work."
+description = "Video downloader for Windows and Linux: paste a link or let the built-in browser find the video. yt-dlp and ffmpeg do the work."
 license = "MIT"
 repository = "https://github.com/echidistanti/camallo"
 
@@ -23,6 +23,20 @@ wry = "0.57.2"
 # Same versions wry already uses, to hear every network response of the built-in browser.
 webview2-com = "0.39.1"
 windows = "0.62.2"
+
+[target."cfg(not(windows))".dependencies]
+lzma-rust2 = { version = "0.25.0", default-features = false, features = ["std", "xz", "optimization"] }
+tar = { version = "0.4", default-features = false }
+zbus = "5"
+
+[target."cfg(unix)".dependencies]
+libc = "0.2.191"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18.2"
+tao = "0.37.2"
+webkit2gtk = "2.0.2"
+wry = "0.57.2"
 
 [profile.release]
 opt-level = "s"

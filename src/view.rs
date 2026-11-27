@@ -68,6 +68,25 @@ fn card_row(
     });
 }
 
+/// Something the user has to read, closed with OK.
+fn notice_card(ui: &mut egui::Ui, text: &str, actions: &mut Vec<Action>) {
+    ui::card(ui, ui::DANGER_DIM, Stroke::new(1.0, ui::DANGER), |ui| {
+        ui.horizontal(|ui| {
+            let left = (ui.available_width() - 90.0).max(140.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(left, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.add(egui::Label::new(RichText::new(text).size(14.0).color(ui::TEXT)).wrap());
+                },
+            );
+            if ui::button(ui, "OK", ui::Kind::Soft).clicked() {
+                actions.push(Action::DismissNotice);
+            }
+        });
+    });
+}
+
 fn detected_card(ui: &mut egui::Ui, found: &[Found], page_title: &str, actions: &mut Vec<Action>) {
     let only_page = found.iter().all(|f| f.kind == Kind::Page);
     let tint = Color32::from_rgb(0x25, 0x1e, 0x3d);
@@ -679,6 +698,10 @@ impl App {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 10.0;
+                if let Some(text) = &snap.notice {
+                    notice_card(ui, text, actions);
+                    ui.add_space(4.0);
+                }
                 if snap.armed && !snap.found.is_empty() {
                     detected_card(ui, &snap.found, &snap.page_title, actions);
                     ui.add_space(4.0);

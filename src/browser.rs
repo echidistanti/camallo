@@ -4,14 +4,71 @@
 // listener sees every response WebView2 receives, from any frame, and judges it by its headers, as the
 // extension does with its browser's request events. Both feed the same detector.
 
+use std::path::Path;
+use std::process::Command;
+
 const SCRIPT: &str = include_str!("detect.js");
+
+/// What to tell the user when WebKitGTK is not on the system (Linux).
+const WEBKIT_MISSING: &str = "The built-in browser needs WebKitGTK, which this system does not have. Install webkit2gtk4.1 (Fedora), libwebkit2gtk-4.1-0 (Ubuntu, Debian) or webkit2gtk-4.1 (Arch), then open the browser again. Everything else works without it.";
+
+/// The command that opens the browser window on `url`, or what is missing. On Windows the browser is this
+/// program started with `--browser`. On Linux it is `camallo-browser`, next to this program, which keeps
+/// WebKitGTK out of the main program: Camallo starts on a system that does not have it.
+pub fn command(url: &str, profile: &Path) -> Result<Command, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    {
+        let _ = profile; // the browser finds its own folder, see `run`
+        let mut c = Command::new(exe);
+        c.args(["--browser", url]);
+        Ok(c)
+    }
+    #[cfg(not(windows))]
+    {
+        // A development aid (see `run`): this program replays a recorded feed itself.
+        if std::env::var_os("CAMALLO_FAKE_FEED").is_some() {
+            let mut c = Command::new(exe);
+            c.args(["--browser", url]);
+            return Ok(c);
+        }
+        let helper = exe.with_file_name("camallo-browser");
+        if !helper.is_file() {
+            return Err(format!("{} is missing", helper.display()));
+        }
+        let mut c = Command::new(helper);
+        c.arg(url).arg(profile);
+        Ok(c)
+    }
+}
+
+/// What to tell the user when the browser program ended soon after it started, from its exit code and what it
+/// printed on stderr. None when it ended well, or when it was stopped on purpose (a signal gives no exit code).
+pub fn failure(code: Option<i32>, stderr: &str) -> Option<String> {
+    match code? {
+        0 => None,
+        _ if stderr.contains("libwebkit2gtk") || stderr.contains("libgtk-3") => {
+            Some(WEBKIT_MISSING.into())
+        }
+        _ => {
+            let last = stderr
+                .lines()
+                .rev()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .unwrap_or("no message");
+            let last: String = last.chars().take(120).collect();
+            Some(format!("The built-in browser could not start: {last}"))
+        }
+    }
+}
 
 /// What the network layer saw, as the line the detector expects.
 #[cfg(windows)]
 fn describe(
     args: Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2WebResourceResponseReceivedEventArgs>,
 ) -> Option<String> {
-    use crate::net::{Resp, is_media, total_size};
+    use crate::net::{Resp, is_media, media_json};
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         ICoreWebView2HttpRequestHeaders, ICoreWebView2HttpResponseHeaders,
     };
@@ -72,7 +129,7 @@ fn describe(
         .as_ref()
         .map(|h| from_request(h, w!("User-Agent")))
         .unwrap_or_default();
-    Some(serde_json::json!({"kind": "media", "url": url, "referer": referer, "ua": ua, "size": total_size(&r)}).to_string())
+    Some(media_json(&r, &referer, &ua))
 }
 
 /// Reports every media response to the event loop. If WebView2 is too old to offer the event, only the script works.
@@ -167,5 +224,46 @@ pub fn run(_url: String) {
         std::thread::sleep(std::time::Duration::from_secs(600));
         return;
     }
-    eprintln!("The built-in browser needs Windows (WebView2).");
+    eprintln!("On Linux the built-in browser is the camallo-browser program, started by Camallo.");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_browser_that_ended_well_or_was_stopped_says_nothing() {
+        assert_eq!(failure(Some(0), "any noise"), None);
+        assert_eq!(failure(None, "killed by Camallo"), None);
+    }
+
+    #[test]
+    fn a_missing_library_names_the_packages() {
+        let said = "camallo-browser: error while loading shared libraries: libwebkit2gtk-4.1.so.0: cannot open shared object file: No such file or directory\n";
+        let m = failure(Some(127), said).unwrap();
+        for pkg in ["webkit2gtk4.1", "libwebkit2gtk-4.1-0", "webkit2gtk-4.1"] {
+            assert!(m.contains(pkg), "{m}");
+        }
+    }
+
+    #[test]
+    fn any_other_failure_shows_the_last_line_it_printed() {
+        let m = failure(Some(101), "thread 'main' panicked\nno display\n\n").unwrap();
+        assert_eq!(m, "The built-in browser could not start: no display");
+        let m = failure(Some(1), "").unwrap();
+        assert!(m.ends_with("no message"));
+        let long = "x".repeat(500);
+        assert!(failure(Some(1), &long).unwrap().chars().count() < 200);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn without_the_helper_next_to_it_the_browser_says_what_is_missing() {
+        // The test program lives where there is no camallo-browser.
+        let e = command("https://example.com", Path::new("/tmp/p")).unwrap_err();
+        assert!(
+            e.contains("camallo-browser") && e.contains("missing"),
+            "{e}"
+        );
+    }
 }

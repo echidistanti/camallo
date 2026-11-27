@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Camallo
+GenericName=Video downloader
+Comment=Download videos from a link or from the built-in browser
+Exec=camallo
+Icon=camallo
+Terminal=false
+Categories=AudioVideo;Video;Network;
+Keywords=video;download;yt-dlp;ffmpeg;
+StartupWMClass=camallo

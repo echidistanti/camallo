@@ -1,3 +1,4 @@
+use crate::browser;
 use crate::deps;
 use crate::detector::{Kind, kind_of};
 use crate::fetch::{self, Entry, Fetched};
@@ -11,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Threads that ask yt-dlp about addresses and videos, so a long playlist fills in quickly.
 const FETCHERS: usize = 3;
@@ -88,6 +89,8 @@ struct Shared {
     deps: Option<Result<(PathBuf, PathBuf), String>>,
     /// Which yt-dlp it is and whether it was brought up to date; empty until that is known.
     ytdlp: String,
+    /// Something the user has to be told that does not fit the status line, until it is dismissed.
+    notice: Option<String>,
     /// Addresses and videos waiting for yt-dlp to read them.
     fetchq: VecDeque<Fetch>,
     /// Pictures waiting to be fetched.
@@ -111,6 +114,7 @@ impl Shared {
             armed: false,
             deps: None,
             ytdlp: String::new(),
+            notice: None,
             fetchq: VecDeque::new(),
             thumbq: VecDeque::new(),
             thumbs: HashMap::new(),
@@ -553,6 +557,49 @@ fn rank(k: Kind) -> u8 {
     }
 }
 
+/// Follows the browser program: feeds what it prints to the list, and when it ends soon after the start and
+/// badly, tells the user why. The returned handle lets the window stop it.
+fn supervise(mut child: Child, sy: Sy, ctx: egui::Context) -> Arc<Mutex<Child>> {
+    let out = child.stdout.take().unwrap();
+    let err = child.stderr.take().unwrap();
+    let child = Arc::new(Mutex::new(child));
+    let c2 = child.clone();
+    let at = Instant::now();
+    std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader, Read};
+        // What the browser printed on stderr, the end of it, for the message if it does not start.
+        let said = std::thread::spawn(move || {
+            let mut tail = Vec::new();
+            let _ = err.take(1 << 20).read_to_end(&mut tail);
+            String::from_utf8_lossy(&tail[tail.len().saturating_sub(4000)..]).into_owned()
+        });
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                on_browser_line(&sy, &ctx, &v);
+            }
+        }
+        // The browser closed its output: it is over. If that came soon after the start, and badly, say why.
+        let code = c2
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .wait()
+            .ok()
+            .and_then(|s| s.code());
+        let said = said.join().unwrap_or_default();
+        let soon = at.elapsed() < Duration::from_secs(10);
+        if let Some(m) = browser::failure(code, &said).filter(|_| soon) {
+            notify(&sy, &ctx, m);
+        }
+    });
+    child
+}
+
+/// Shows `text` at the top of the list until the user dismisses it.
+fn notify(sy: &Sy, ctx: &egui::Context, text: String) {
+    lock(&sy.0).notice = Some(text);
+    ctx.request_repaint();
+}
+
 /// A line the browser process printed.
 fn on_browser_line(sy: &Sy, ctx: &egui::Context, v: &serde_json::Value) {
     let text = |k: &str| v[k].as_str().unwrap_or_default().to_string();
@@ -926,6 +973,8 @@ pub enum Action {
     ChangeFolder,
     ClearHistory,
     Settings(Settings),
+    /// Close the notice at the top of the list.
+    DismissNotice,
 }
 
 /// What the window needs to draw one frame, copied so the lock is not held while drawing.
@@ -935,6 +984,7 @@ pub struct Snapshot {
     pub history: Vec<HistoryItem>,
     pub status: String,
     pub ytdlp: String,
+    pub notice: Option<String>,
     pub set: Settings,
     pub armed: bool,
     pub page_title: String,
@@ -947,7 +997,8 @@ pub struct App {
     pub input: String,
     /// The last Add was refused because the text is not a link.
     pub bad_input: bool,
-    browser: Option<Child>,
+    /// The browser program; shared with the thread that reads what it prints.
+    browser: Option<Arc<Mutex<Child>>>,
     pub show_settings: bool,
 }
 
@@ -995,6 +1046,7 @@ impl App {
             history: s.history.clone(),
             status: s.status.clone(),
             ytdlp: s.ytdlp.clone(),
+            notice: s.notice.clone(),
             set: s.set.clone(),
             armed: s.armed,
             page_title: s.page_title.clone(),
@@ -1007,29 +1059,29 @@ impl App {
     }
 
     fn open_browser(&mut self, url: String) {
-        if let Some(mut c) = self.browser.take() {
-            let _ = c.kill();
+        if let Some(c) = self.browser.take() {
+            let _ = c.lock().unwrap_or_else(|e| e.into_inner()).kill();
         }
-        let Ok(exe) = std::env::current_exe() else {
-            return;
-        };
-        let mut cmd = Command::new(exe);
-        let child = job::quiet(&mut cmd)
-            .args(["--browser", &url])
-            .stdout(Stdio::piped())
-            .spawn();
-        let Ok(mut child) = child else { return };
-        let out = child.stdout.take().unwrap();
-        let (sy, ctx) = (self.sy.clone(), self.ctx.clone());
-        std::thread::spawn(move || {
-            use std::io::{BufRead, BufReader};
-            for line in BufReader::new(out).lines().map_while(Result::ok) {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-                    on_browser_line(&sy, &ctx, &v);
-                }
-            }
+        let profile = deps::data_dir().join("webview");
+        let started = browser::command(&url, &profile).and_then(|mut cmd| {
+            job::quiet(&mut cmd)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| e.to_string())
         });
-        self.browser = Some(child);
+        let child = match started {
+            Ok(c) => c,
+            Err(e) => {
+                notify(
+                    &self.sy,
+                    &self.ctx,
+                    format!("The built-in browser could not start: {e}"),
+                );
+                return;
+            }
+        };
+        self.browser = Some(supervise(child, self.sy.clone(), self.ctx.clone()));
     }
 
     pub fn handle(&mut self, a: Action) {
@@ -1119,6 +1171,7 @@ impl App {
                 }
             }
             Action::Browser(u) => self.open_browser(u),
+            Action::DismissNotice => lock(m).notice = None,
             Action::Open(p) => open_path(&p),
             Action::Reveal(p) => reveal(&p),
             Action::OpenFolder => {
@@ -1153,7 +1206,7 @@ impl App {
     }
 }
 
-fn open_path(p: &Path) {
+pub fn open_path(p: &Path) {
     #[cfg(windows)]
     let _ = Command::new("explorer").arg(p).spawn();
     #[cfg(not(windows))]
@@ -1170,7 +1223,7 @@ fn reveal(p: &Path) {
             .spawn();
     }
     #[cfg(not(windows))]
-    open_path(p.parent().unwrap_or(p));
+    crate::filemanager::reveal(p);
 }
 
 impl Found {
@@ -1196,8 +1249,8 @@ fn nz(s: &str) -> Option<String> {
 
 impl Drop for App {
     fn drop(&mut self) {
-        if let Some(mut c) = self.browser.take() {
-            let _ = c.kill();
+        if let Some(c) = self.browser.take() {
+            let _ = c.lock().unwrap_or_else(|e| e.into_inner()).kill();
         }
         // Do not leave yt-dlp and ffmpeg running behind a closed window.
         let running: Vec<Arc<Ctl>> = lock(&self.sy.0)
@@ -1226,6 +1279,58 @@ mod tests {
     }
     fn media(url: &str, referer: &str) -> serde_json::Value {
         json!({"kind": "media", "url": url, "referer": referer, "ua": "UA", "title": ""})
+    }
+
+    /// A stand-in for the browser program: runs `script`, and returns the notice that follows (if any).
+    #[cfg(unix)]
+    fn notice_after(script: &str) -> Option<String> {
+        let sy: Sy = Arc::new((
+            Mutex::new(Shared::new(Settings::default(), vec![])),
+            Condvar::new(),
+        ));
+        let child = Command::new("sh")
+            .args(["-c", script])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let handle = supervise(child, sy.clone(), egui::Context::default());
+        // Let the process end, then give the supervisor a moment to read its stderr and decide.
+        let _ = handle.lock().unwrap().wait();
+        for _ in 0..50 {
+            if lock(&sy.0).notice.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        lock(&sy.0).notice.clone()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_browser_that_cannot_load_webkit_tells_what_to_install() {
+        let n = notice_after(
+            "echo 'camallo-browser: error while loading shared libraries: libwebkit2gtk-4.1.so.0: cannot open shared object file' >&2; exit 127",
+        )
+        .expect("a notice");
+        assert!(n.contains("webkit2gtk4.1") && n.contains("Fedora"), "{n}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_browser_that_closes_normally_leaves_no_notice() {
+        assert_eq!(
+            notice_after("echo '{\"kind\":\"title\",\"title\":\"t\"}'; exit 0"),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_browser_stopped_by_the_window_leaves_no_notice() {
+        // Killed by a signal, as the window does when it opens another browser or closes.
+        assert_eq!(notice_after("kill -KILL $$"), None);
     }
 
     #[test]
