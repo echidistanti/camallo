@@ -70,6 +70,7 @@ Download `camallo-<version>-linux-x86_64.AppImage` from the [latest release](htt
 The Linux version is new. What has been checked: the automated tests, the main window starting under a virtual display, and the browser opening a page with a video from a local server and reporting it with its size (GitHub runs that on every push, from inside the AppImage). What has not: a real desktop, a real GPU and the sites that need a video codec WebKitGTK may lack. Reports from real machines are the most useful thing you can send.
 
 - **The browser window is blank.** Some graphics drivers, AMD ones under Wayland among them, do not get along with WebKitGTK's buffer renderer. Start Camallo with `WEBKIT_DISABLE_DMABUF_RENDERER=1` in the environment: the browser inherits it.
+- **The browser window takes about 25 seconds to appear.** GTK asks the desktop's portal service over D-Bus before it shows anything, and waits that long when the service is installed but never answers (this is what GitHub's runners do). Start Camallo with `DBUS_SESSION_BUS_ADDRESS=disabled:` in the environment to skip the wait; "Show in folder" then just opens the folder.
 - **A page's video does not play in the built-in browser.** WebKitGTK plays what the system's GStreamer can decode, and some distributions ship without H.264. Detection still sees what the page asks for, so the video may be found all the same.
 - **Show in folder** asks the file manager over D-Bus to select the file, and opens the folder when none answers.
 
