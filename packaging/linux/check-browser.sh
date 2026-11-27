@@ -64,12 +64,12 @@ server=$!
 sleep 1
 
 # No GPU and no user namespaces are to be had on a build machine.
-export WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
+export WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
 timeout "${CAMALLO_CHECK_SECONDS:-25}" "$browser" "http://127.0.0.1:$port/page.html" "$work/profile" >"$work/out.txt" 2>"$work/err.txt" || true
 
 grep '^{' "$work/out.txt" >"$work/lines.txt" || true
 echo "the browser reported:"; cut -c1-160 "$work/lines.txt"
-fail() { echo "FAILED: $1"; tail -5 "$work/err.txt"; exit 1; }
+fail() { echo "FAILED: $1"; echo "--- what the browser said on stderr:"; head -60 "$work/err.txt"; echo "--- and on stdout:"; head -20 "$work/out.txt"; exit 1; }
 grep -q '"kind":"page"' "$work/lines.txt" || fail "the page was not reported"
 grep -q '"title":"Camallo test page"' "$work/lines.txt" || fail "the title was not reported"
 grep -q "\"kind\":\"media\".*\"size\":$size,.*sample.webm" "$work/lines.txt" || fail "the video was not reported with its size ($size)"
