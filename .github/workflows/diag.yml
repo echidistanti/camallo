@@ -26,11 +26,12 @@ jobs:
         run: cargo build --release --locked --bin camallo-browser
       - name: Where it waits
         run: |
-          echo "--- environment"; env | grep -E 'XDG|DBUS|DISPLAY|GDK|GTK|HOME|WEBKIT' | sort
-          ls -ld "${XDG_RUNTIME_DIR:-/nonexistent}" || true
-          ls /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/ || true
+          sudo apt-get install -y gdb >/dev/null 2>&1 || true
           export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
+          echo "--- main thread, last syscalls"
           xvfb-run -a bash -c 'timeout 12 strace -f -tt -o /tmp/st.txt target/release/camallo-browser about:blank /tmp/prof >/tmp/o.txt 2>/tmp/e.txt; true' || true
-          echo "--- execve of helpers"; grep -E 'execve\(' /tmp/st.txt | grep -vE 'ENOENT' | cut -c1-200 | head -10
-          echo "--- last 40 lines of the trace"; tail -40 /tmp/st.txt | cut -c1-200
-          echo "--- connect() to unix sockets"; grep -E 'connect\(.*AF_UNIX' /tmp/st.txt | cut -c1-200 | head -15
+          P=$(head -1 /tmp/st.txt | awk '{print $1}')
+          awk -v p="$P" '$1==p' /tmp/st.txt | tail -25 | cut -c1-210
+          echo "--- processes started"; grep -cE 'execve\(' /tmp/st.txt; grep -E 'clone3?\(' /tmp/st.txt | wc -l
+          echo "--- stacks of all threads"
+          xvfb-run -a bash -c 'target/release/camallo-browser about:blank /tmp/prof >/tmp/o.txt 2>/tmp/e.txt & P=$!; sleep 8; gdb -p $P -batch -ex "thread apply all bt 14" 2>&1 | grep -E "^(Thread|#)" | cut -c1-190 | head -120; kill $P' || true
