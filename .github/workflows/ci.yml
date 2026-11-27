@@ -67,6 +67,10 @@ jobs:
           test "$code" = 124
       - name: The browser finds a video
         # The browser program from inside the AppImage opens a page with a video and reports it.
+        # The runner has a session bus whose desktop portal never answers, and GTK waits 25 seconds
+        # for it before it shows anything, so the check runs without a session bus.
+        env:
+          DBUS_SESSION_BUS_ADDRESS: "disabled:"
         run: xvfb-run -a packaging/linux/check-browser.sh dist/squashfs-root/usr/bin/camallo-browser
       - run: rm -rf dist/squashfs-root
       - uses: actions/upload-artifact@v4
