@@ -24,16 +24,13 @@ jobs:
           dpkg -l | grep -E 'libwebkit2gtk-4.1-0|libsoup-3|libgtk-3-0|libglib2.0-0 |mesa' | awk '{print $2, $3}'
       - name: Build the browser program
         run: cargo build --release --locked --bin camallo-browser
-      - name: Variants
+      - name: Where it waits
         run: |
-          for v in "" "WEBKIT_DISABLE_COMPOSITING_MODE=1" "WEBKIT_DISABLE_DMABUF_RENDERER=1" "WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1" "LIBGL_ALWAYS_SOFTWARE=1 WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1" "GDK_BACKEND=x11 WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1"; do
-            echo "=== variant: [$v]"
-            export CAMALLO_CHECK_SECONDS=14
-            # check-browser.sh sets its own variables first; clear them by running through env -i-like override
-            env $v bash -c 'sed "s/^export WEBKIT_DISABLE.*$/:/" packaging/linux/check-browser.sh > /tmp/cb.sh; chmod +x /tmp/cb.sh; xvfb-run -a /tmp/cb.sh target/release/camallo-browser' 2>&1 | cut -c1-200 | head -14 || true
-          done
-      - name: What the web processes do
-        run: |
-          echo "--- processes during a run"
-          ( xvfb-run -a bash -c 'WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 timeout 12 target/release/camallo-browser about:blank /tmp/prof >/tmp/o.txt 2>/tmp/e.txt & sleep 8; ps aux | grep -iE "webkit|camallo" | grep -v grep | cut -c1-200; wait' ) || true
-          echo "--- stderr"; cat /tmp/e.txt | head -30
+          echo "--- environment"; env | grep -E 'XDG|DBUS|DISPLAY|GDK|GTK|HOME|WEBKIT' | sort
+          ls -ld "${XDG_RUNTIME_DIR:-/nonexistent}" || true
+          ls /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/ || true
+          export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
+          xvfb-run -a bash -c 'timeout 12 strace -f -tt -o /tmp/st.txt target/release/camallo-browser about:blank /tmp/prof >/tmp/o.txt 2>/tmp/e.txt; true' || true
+          echo "--- execve of helpers"; grep -E 'execve\(' /tmp/st.txt | grep -vE 'ENOENT' | cut -c1-200 | head -10
+          echo "--- last 40 lines of the trace"; tail -40 /tmp/st.txt | cut -c1-200
+          echo "--- connect() to unix sockets"; grep -E 'connect\(.*AF_UNIX' /tmp/st.txt | cut -c1-200 | head -15
